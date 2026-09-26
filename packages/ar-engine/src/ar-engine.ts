@@ -88,11 +88,21 @@ export class ArEngine {
     if (!ctx) throw new Error('overlay canvas 2d context missing');
     this.canvasRenderer = new Canvas2dRenderer(host.overlayCanvas, ctx);
 
-    const is3d = config.assetType === 'MODEL_GLB' || config.assetType === 'MODEL_GLTF';
-    if (is3d) {
-      if (!host.threeCanvas) throw new Error('threeCanvas required for 3D assets');
+    const useProcedural3d =
+      config.assetUrl === 'procedural://earring' ||
+      config.assetType === 'MODEL_GLB' ||
+      config.assetType === 'MODEL_GLTF';
+    if (useProcedural3d && host.threeCanvas) {
       this.threeRenderer = new ThreeRenderer(host.threeCanvas);
-      await this.threeRenderer.loadModel(config.assetUrl, config.mirrorForOppositeEar ?? false);
+      await this.threeRenderer.loadModel(
+        config.assetUrl || 'procedural://earring',
+        config.mirrorForOppositeEar ?? true,
+      );
+    } else if (config.assetType === 'IMAGE_OVERLAY') {
+      await this.canvasRenderer.loadOverlay(config.assetUrl, config.mirrorForOppositeEar ?? false);
+    } else if (host.threeCanvas) {
+      this.threeRenderer = new ThreeRenderer(host.threeCanvas);
+      this.threeRenderer.loadProceduralEarring(config.mirrorForOppositeEar ?? true);
     } else {
       await this.canvasRenderer.loadOverlay(config.assetUrl, config.mirrorForOppositeEar ?? false);
     }
@@ -173,6 +183,24 @@ export class ArEngine {
 
         this.canvasRenderer.drawVideo(this.host.video, this.mirrored);
 
+        if (this.lastLandmarks) {
+          const named = this.lastLandmarks.named;
+          const width = this.host.overlayCanvas.width;
+          const mirroredNamed = this.mirrored
+            ? Object.fromEntries(
+                Object.entries(named).map(([k, v]) => [k, { x: width - v.x, y: v.y }]),
+              )
+            : named;
+          this.canvasRenderer.drawLandmarks(mirroredNamed, [
+            'LEFT_EAR_LOBE',
+            'RIGHT_EAR_LOBE',
+            'NOSE_TIP',
+            'LEFT_EYE',
+            'RIGHT_EYE',
+            'CHIN',
+          ]);
+        }
+
         if (this.adaptive.shouldDetect(this.frameIndex)) {
           const raw = await this.detector.estimate(this.host.video);
           const { result, lost } = this.processor.process(raw);
@@ -180,7 +208,8 @@ export class ArEngine {
           if (lost) this.scheduleRecovery();
         }
 
-        const pose = this.fitter.fit(this.lastLandmarks);
+        const rawPose = this.fitter.fit(this.lastLandmarks);
+        const pose = this.mirrorPose(rawPose, this.host.overlayCanvas.width);
         this.lastPose = pose;
         this.status = this.tracker.update(pose);
 
@@ -226,6 +255,19 @@ export class ArEngine {
         // ignore
       }
     }, 250);
+  }
+
+
+  private mirrorPose(pose: PoseFit, width: number): PoseFit {
+    if (!this.mirrored) return pose;
+    return {
+      ...pose,
+      position: { x: width - pose.position.x, y: pose.position.y },
+      secondaryPosition: pose.secondaryPosition
+        ? { x: width - pose.secondaryPosition.x, y: pose.secondaryPosition.y }
+        : undefined,
+      rotationZ: -pose.rotationZ,
+    };
   }
 
   private emit(events: ArEngineEvents): void {

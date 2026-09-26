@@ -1,66 +1,105 @@
-import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
+import * as blazeface from '@tensorflow-models/blazeface';
 import type { ModelAdapter, PixelInput } from '../models/model-adapter.js';
 import type { LandmarkResult } from '../types.js';
 
 /**
- * Face landmark detector via TF.js face-landmarks-detection (MediaPipe-free runtime path:
- * uses TFJS model runtime; no @mediapipe packages imported).
+ * Face detector using BlazeFace (pure TensorFlow.js — no MediaPipe packages).
+ * Ear tragion keypoints drive earring anchors.
  */
 export class FaceDetector implements ModelAdapter {
   readonly name = 'face';
-  private detector: faceLandmarksDetection.FaceLandmarksDetector | null = null;
+  private model: blazeface.BlazeFaceModel | null = null;
 
   async load(): Promise<void> {
-    this.detector = await faceLandmarksDetection.createDetector(
-      faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
-      {
-        runtime: 'tfjs',
-        refineLandmarks: true,
-        maxFaces: 1,
-      },
-    );
+    this.model = await blazeface.load({ maxFaces: 1 });
   }
 
   async estimate(input: PixelInput): Promise<LandmarkResult | null> {
-    if (!this.detector) return null;
-    const faces = await this.detector.estimateFaces(input, { flipHorizontal: false });
-    const face = faces[0];
-    if (!face || !face.keypoints?.length) return null;
+    if (!this.model) return null;
+    const preds = await this.model.estimateFaces(input as HTMLVideoElement | HTMLCanvasElement, false);
+    const face = preds[0];
+    if (!face) return null;
 
+    const landmarks = face.landmarks as Array<[number, number]> | undefined;
+    // BlazeFace order: right eye, left eye, nose, mouth, right ear, left ear
     const named: LandmarkResult['named'] = {};
-    const points = face.keypoints.map((kp) => {
-      const point = { x: kp.x, y: kp.y, z: kp.z, name: kp.name };
-      if (kp.name) named[kp.name] = point;
-      return point;
-    });
+    const points: LandmarkResult['points'] = [];
 
-    // Approximate ear / nose / chin from named keypoints when available
-    const leftEye = named['leftEye'] ?? named['leftEyeOuter'] ?? points[33];
-    const rightEye = named['rightEye'] ?? named['rightEyeOuter'] ?? points[263];
-    const noseTip = named['noseTip'] ?? points[1];
-    const chin = points[152] ?? noseTip;
+    const add = (name: string, xy?: [number, number] | number[]) => {
+      if (!xy || xy.length < 2) return;
+      const point = { x: Number(xy[0]), y: Number(xy[1]), name };
+      named[name] = point;
+      points.push(point);
+    };
 
-    if (leftEye) named['LEFT_EYE'] = leftEye;
-    if (rightEye) named['RIGHT_EYE'] = rightEye;
-    if (noseTip) named['NOSE_TIP'] = noseTip;
-    if (chin) named['CHIN'] = chin;
-
-    // Ear lobe proxies from face oval indices commonly used with FaceMesh topology
-    if (points[234]) named['LEFT_EAR_LOBE'] = points[234];
-    if (points[454]) named['RIGHT_EAR_LOBE'] = points[454];
-
-    let scaleRef = 100;
-    if (leftEye && rightEye) {
-      scaleRef = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y) || 100;
+    if (landmarks && landmarks.length >= 6) {
+      add('RIGHT_EYE', landmarks[0]);
+      add('LEFT_EYE', landmarks[1]);
+      add('NOSE_TIP', landmarks[2]);
+      add('MOUTH', landmarks[3]);
+      add('RIGHT_EAR_LOBE', landmarks[4]);
+      add('LEFT_EAR_LOBE', landmarks[5]);
     }
 
-    const box = face.box;
-    const confidence = box ? 0.9 : 0.7;
+    const topLeft = face.topLeft as [number, number];
+    const bottomRight = face.bottomRight as [number, number];
+    const faceWidth = Math.max(1, bottomRight[0] - topLeft[0]);
+    const faceHeight = Math.max(1, bottomRight[1] - topLeft[1]);
 
-    return { kind: 'face', confidence, points, named, scaleRef };
+    // Chin proxy below mouth / box center
+    if (named['MOUTH']) {
+      named['CHIN'] = {
+        x: named['MOUTH'].x,
+        y: named['MOUTH'].y + faceHeight * 0.22,
+        name: 'CHIN',
+      };
+      points.push(named['CHIN']);
+    } else {
+      named['CHIN'] = {
+        x: (topLeft[0] + bottomRight[0]) / 2,
+        y: bottomRight[1] - faceHeight * 0.05,
+        name: 'CHIN',
+      };
+      points.push(named['CHIN']);
+    }
+
+    // Offset ear lobes slightly downward for earring hang
+    if (named['LEFT_EAR_LOBE']) {
+      named['LEFT_EAR_LOBE'] = {
+        ...named['LEFT_EAR_LOBE'],
+        y: named['LEFT_EAR_LOBE'].y + faceHeight * 0.06,
+      };
+    }
+    if (named['RIGHT_EAR_LOBE']) {
+      named['RIGHT_EAR_LOBE'] = {
+        ...named['RIGHT_EAR_LOBE'],
+        y: named['RIGHT_EAR_LOBE'].y + faceHeight * 0.06,
+      };
+    }
+
+    let scaleRef = faceWidth;
+    if (named['LEFT_EYE'] && named['RIGHT_EYE']) {
+      scaleRef =
+        Math.hypot(
+          named['RIGHT_EYE'].x - named['LEFT_EYE'].x,
+          named['RIGHT_EYE'].y - named['LEFT_EYE'].y,
+        ) || faceWidth;
+    }
+
+    const probability = Array.isArray(face.probability)
+      ? Number(face.probability[0] ?? 0.9)
+      : Number(face.probability ?? 0.9);
+
+    return {
+      kind: 'face',
+      confidence: Number.isFinite(probability) ? probability : 0.85,
+      points,
+      named,
+      scaleRef,
+    };
   }
 
   dispose(): void {
-    this.detector = null;
+    this.model = null;
   }
 }

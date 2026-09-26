@@ -43,3 +43,5 @@
 - UUID primary keys, soft delete, audit logging
 - Git: `main` <- PR only; `develop` <- `feature/*` | `release/*` | `hotfix/*`
 - Design documents are source of truth until implementation PRs land
+
+| 10 | [Phase 1 Checklist](./10-phase1-checklist.md) | Completion evidence for foundation gate |

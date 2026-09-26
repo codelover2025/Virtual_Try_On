@@ -44,7 +44,21 @@ export class Canvas2dRenderer {
   clear(): void {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
+
+  drawLandmarks(named: Record<string, { x: number; y: number }>, keys: string[]): void {
+    this.ctx.save();
+    for (const key of keys) {
+      const p = named[key];
+      if (!p) continue;
+      this.ctx.beginPath();
+      this.ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      this.ctx.fillStyle = key.includes('EAR') ? '#22c55e' : '#38bdf8';
+      this.ctx.fill();
+    }
+    this.ctx.restore();
+  }
 }
+
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
