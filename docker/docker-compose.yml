@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vj
+      POSTGRES_PASSWORD: vjsecret
+      POSTGRES_DB: vj_tryon
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vj -d vj_tryon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb -p local/vj-assets || true;
+      mc anonymous set download local/vj-assets || true;
+      exit 0;
+      "
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql://vj:vjsecret@postgres:5432/vj_tryon?schema=public
+      REDIS_URL: redis://redis:6379
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_PUBLIC_BASE_URL: http://localhost:9000/vj-assets
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  miniodata:

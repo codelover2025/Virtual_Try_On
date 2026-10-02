@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install
+      - name: Build shared
+        run: pnpm --filter @vj/shared build && pnpm --filter @vj/types build
+      - name: Prisma generate
+        run: pnpm --filter @vj/api prisma:generate
+        env:
+          DATABASE_URL: postgresql://vj:vjsecret@localhost:5432/vj_tryon?schema=public
+      - name: Typecheck API
+        run: pnpm --filter @vj/api typecheck
+      - name: Build API
+        run: pnpm --filter @vj/api build
+      - name: Build AR engine
+        run: pnpm --filter @vj/ar-engine build
