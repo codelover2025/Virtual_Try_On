@@ -1,4 +1,4 @@
-import { cn } from '../lib/utils.js';
+import { cn } from '../lib/utils';
 
 export function PageLoader({ className, label = 'Loading…' }: { className?: string; label?: string }) {
   return (

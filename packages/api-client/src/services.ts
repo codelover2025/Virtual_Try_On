@@ -3,8 +3,8 @@ import type { CategoryDto, ProductDetailDto, ProductListItemDto } from '@vj/type
 import type { AdminSettingItem, PublicSettingsDto } from '@vj/types';
 import type { CaptureDto, CaptureDownloadDto, TryOnSessionDto } from '@vj/types';
 import type { JewelleryKind, ProductStatus, TryOnSessionStatus } from '@vj/shared';
-import type { ApiClient } from './client.js';
-import type { ProductListFilters } from './query-keys.js';
+import type { ApiClient } from './client';
+import type { ProductListFilters } from './query-keys';
 
 export interface Paginated<T> {
   items: T[];

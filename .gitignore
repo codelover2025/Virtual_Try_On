@@ -11,3 +11,5 @@ coverage
 apps/api/prisma/*.db
 uploads
 tmp
+storage-data
+apps/api/storage-data

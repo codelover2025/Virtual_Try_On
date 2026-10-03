@@ -97,7 +97,7 @@ async function main() {
     update: {},
   });
 
-  await prisma.category.upsert({
+  const earringCategory = await prisma.category.upsert({
     where: { slug: 'earrings' },
     create: {
       name: 'Earrings',
@@ -108,6 +108,95 @@ async function main() {
     },
     update: { isActive: true },
   });
+
+  // Demo products with overlay assets for the try-on studio
+  const demoProducts = [
+    {
+      sku: 'DEMO-EARRING-001',
+      name: 'Gold Hoop Earrings',
+      slug: 'gold-hoop-earrings',
+      description: 'Classic 22k gold hoop earrings with a polished finish.',
+      jewelleryKind: 'EARRINGS' as const,
+      priceCents: 1299900,
+      currency: 'INR',
+      overlayUrl: 'https://images.unsplash.com/photo-1535632066927-ab7c9ab60908?w=400&h=400&fit=crop',
+    },
+    {
+      sku: 'DEMO-EARRING-002',
+      name: 'Diamond Drop Earrings',
+      slug: 'diamond-drop-earrings',
+      description: 'Elegant diamond-studded drop earrings in white gold.',
+      jewelleryKind: 'EARRINGS' as const,
+      priceCents: 2499900,
+      currency: 'INR',
+      overlayUrl: 'https://images.unsplash.com/photo-1611591437281-460bfbe1220a?w=400&h=400&fit=crop',
+    },
+    {
+      sku: 'DEMO-EARRING-003',
+      name: 'Pearl Stud Earrings',
+      slug: 'pearl-stud-earrings',
+      description: 'Lustrous freshwater pearl studs set in sterling silver.',
+      jewelleryKind: 'EARRINGS' as const,
+      priceCents: 599900,
+      currency: 'INR',
+      overlayUrl: 'https://images.unsplash.com/photo-1589128777073-263566ae5e4d?w=400&h=400&fit=crop',
+    },
+  ];
+
+  for (const p of demoProducts) {
+    const product = await prisma.product.upsert({
+      where: { sku: p.sku },
+      create: {
+        categoryId: earringCategory.id,
+        sku: p.sku,
+        name: p.name,
+        slug: p.slug,
+        description: p.description,
+        jewelleryKind: p.jewelleryKind,
+        status: 'PUBLISHED',
+        priceCents: p.priceCents,
+        currency: p.currency,
+        publishedAt: new Date(),
+      },
+      update: { status: 'PUBLISHED', publishedAt: new Date() },
+    });
+
+    // Upsert a primary image
+    const existingImage = await prisma.productImage.findFirst({
+      where: { productId: product.id, isPrimary: true },
+    });
+    if (!existingImage) {
+      await prisma.productImage.create({
+        data: {
+          productId: product.id,
+          storageKey: `demo/${p.sku}/primary.jpg`,
+          url: p.overlayUrl,
+          altText: p.name,
+          isPrimary: true,
+          sortOrder: 0,
+        },
+      });
+    }
+
+    // Upsert a jewellery asset (IMAGE_OVERLAY) used by the try-on engine
+    const existingAsset = await prisma.jewelleryAsset.findFirst({
+      where: { productId: product.id, assetType: 'IMAGE_OVERLAY' },
+    });
+    if (!existingAsset) {
+      await prisma.jewelleryAsset.create({
+        data: {
+          productId: product.id,
+          kind: p.jewelleryKind,
+          assetType: 'IMAGE_OVERLAY',
+          storageKey: `demo/${p.sku}/overlay.jpg`,
+          url: p.overlayUrl,
+          anchorProfile: { type: 'ear', offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 },
+          defaultScale: 1.0,
+          isActive: true,
+        },
+      });
+    }
+  }
 
   await prisma.setting.upsert({
     where: { key: 'tryon.guestEnabled' },

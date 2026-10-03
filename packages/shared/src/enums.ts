@@ -29,11 +29,22 @@ export type ProductStatus = (typeof ProductStatus)[keyof typeof ProductStatus];
 
 export const AssetType = {
   IMAGE_OVERLAY: 'IMAGE_OVERLAY',
+  IMAGE_2D: 'IMAGE_OVERLAY',
   MODEL_GLB: 'MODEL_GLB',
   MODEL_GLTF: 'MODEL_GLTF',
+  MODEL_3D: 'MODEL_GLB',
+  PROCEDURAL: 'MODEL_GLB',
   ALPHA_MASK: 'ALPHA_MASK',
 } as const;
 export type AssetType = (typeof AssetType)[keyof typeof AssetType];
+
+export const AnchorType = {
+  EAR_LOBE: 'EAR_LOBE',
+  NECK_BASE: 'NECK_BASE',
+  FINGER_BASE: 'FINGER_BASE',
+  WRIST: 'WRIST',
+} as const;
+export type AnchorType = (typeof AnchorType)[keyof typeof AnchorType];
 
 export const TryOnSessionStatus = {
   ACTIVE: 'ACTIVE',

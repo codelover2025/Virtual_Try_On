@@ -25,7 +25,10 @@ services:
       timeout: 3s
       retries: 10
 
+  # Optional: only when Docker Hub can pull MinIO images
+  # docker compose --profile storage -f docker/docker-compose.yml up -d
   minio:
+    profiles: ["storage"]
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
@@ -38,6 +41,7 @@ services:
       - miniodata:/data
 
   createbuckets:
+    profiles: ["storage"]
     image: minio/mc:latest
     depends_on:
       - minio
@@ -51,6 +55,7 @@ services:
       "
 
   api:
+    profiles: ["full"]
     build:
       context: ..
       dockerfile: docker/api.Dockerfile
@@ -59,8 +64,7 @@ services:
     environment:
       DATABASE_URL: postgresql://vj:vjsecret@postgres:5432/vj_tryon?schema=public
       REDIS_URL: redis://redis:6379
-      STORAGE_ENDPOINT: http://minio:9000
-      STORAGE_PUBLIC_BASE_URL: http://localhost:9000/vj-assets
+      STORAGE_PROVIDER: local
     ports:
       - "4000:4000"
     depends_on:
@@ -68,10 +72,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_started
 
   nginx:
+    profiles: ["full"]
     image: nginx:1.27-alpine
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro

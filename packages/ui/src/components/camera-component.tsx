@@ -2,8 +2,8 @@
 
 import * as React from 'react';
 import { Camera, FlipHorizontal, RefreshCw, Sun, Sparkles, AlertCircle, Eye, EyeOff } from 'lucide-react';
-import { cn } from '../lib/utils.js';
-import { Button } from './button.js';
+import { cn } from '../lib/utils';
+import { Button } from './button';
 
 export interface CameraHud {
   status: string;
