@@ -33,6 +33,7 @@ export class ThreeRenderer {
   private camera:    THREE.OrthographicCamera;
   private root     = new THREE.Group();
   private secondary = new THREE.Group();
+  private occluder:  THREE.Mesh;
   private ready    = false;
 
   // Asset caching with LRU
@@ -103,6 +104,18 @@ export class ThreeRenderer {
 
     this.scene.add(ambient, key, fill, rim, bottomFill);
 
+    // ── Depth-Buffer Face Occluder (colorWrite = false, depthWrite = true) ──
+    const occluderGeo = new THREE.SphereGeometry(1.0, 24, 24);
+    occluderGeo.scale(0.85, 1.15, 0.95);
+    const occluderMat = new THREE.MeshBasicMaterial({
+      colorWrite: false,
+      depthWrite: true,
+    });
+    this.occluder = new THREE.Mesh(occluderGeo, occluderMat);
+    this.occluder.renderOrder = -1;
+    this.occluder.visible = false;
+    this.scene.add(this.occluder);
+
     // ── Groups ─────────────────────────────────────────────────────────────
     this.scene.add(this.root, this.secondary);
 
@@ -166,13 +179,86 @@ export class ThreeRenderer {
       this.secondary.add(sec);
     }
     this.mirrorSecondary = mirrorSec;
-    this.currentAssetUrl  = 'procedural://earring';
+    this.currentAssetUrl = 'procedural://earring';
+    this.ready = true;
+  }
+
+  loadProceduralNecklace(): void {
+    this._clearGroups();
+    this.instanceOwnsGeometry = true;
+    const mesh = createChokerNecklace();
+    this.root.add(mesh);
+    this.mirrorSecondary = false;
+    this.secondary.visible = false;
+    this.currentAssetUrl = 'procedural://necklace';
+    this.ready = true;
+  }
+
+  loadProceduralNoseRing(): void {
+    this._clearGroups();
+    this.instanceOwnsGeometry = true;
+    const mesh = createSeptumNoseRing();
+    this.root.add(mesh);
+    this.mirrorSecondary = false;
+    this.secondary.visible = false;
+    this.currentAssetUrl = 'procedural://nose_ring';
+    this.ready = true;
+  }
+
+  loadProceduralRing(): void {
+    this._clearGroups();
+    this.instanceOwnsGeometry = true;
+    const mesh = createSolitaireRing();
+    this.root.add(mesh);
+    this.mirrorSecondary = false;
+    this.secondary.visible = false;
+    this.currentAssetUrl = 'procedural://ring';
+    this.ready = true;
+  }
+
+  loadProceduralBangle(): void {
+    this._clearGroups();
+    this.instanceOwnsGeometry = true;
+    const mesh = createKadaBangle();
+    this.root.add(mesh);
+    this.mirrorSecondary = false;
+    this.secondary.visible = false;
+    this.currentAssetUrl = 'procedural://bangle';
+    this.ready = true;
+  }
+
+  loadProcedural(kind: string, mirrorSec = false): void {
+    const normalized = (kind || '').toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (normalized.includes('necklace')) {
+      this.loadProceduralNecklace();
+    } else if (normalized.includes('nose') || normalized.includes('septum')) {
+      this.loadProceduralNoseRing();
+    } else if (normalized.includes('ring')) {
+      this.loadProceduralRing();
+    } else if (normalized.includes('bangle') || normalized.includes('bracelet')) {
+      this.loadProceduralBangle();
+    } else if (normalized.includes('earring')) {
+      this.loadProceduralEarring(mirrorSec);
+    } else {
+      this.loadProceduralFallback(kind);
+    }
+  }
+
+  loadProceduralFallback(kind: string): void {
+    this._clearGroups();
+    this.instanceOwnsGeometry = true;
+    const mesh = createPlaceholderBadge(kind);
+    this.root.add(mesh);
+    this.mirrorSecondary = false;
+    this.secondary.visible = false;
+    this.currentAssetUrl = `procedural://${kind}`;
     this.ready = true;
   }
 
   async loadModel(url: string, mirrorSec = false): Promise<void> {
-    if (!url || url === 'procedural://earring') {
-      this.loadProceduralEarring(mirrorSec);
+    if (!url || url.startsWith('procedural://')) {
+      const kind = url ? url.replace('procedural://', '').trim() : 'earring';
+      this.loadProcedural(kind, mirrorSec);
       return;
     }
 
@@ -289,16 +375,65 @@ export class ThreeRenderer {
     // Always render for fade animation, skip only when frozen.
     const needRender = poseKey !== this.lastPoseKey || this.mixer !== null;
 
+    // Occluder mesh transform for head occlusion
+    if (pose.secondaryPosition) {
+      const midX = (pose.position.x + pose.secondaryPosition.x) / 2;
+      const midY = (pose.position.y + pose.secondaryPosition.y) / 2;
+      const headDist = Math.hypot(
+        pose.secondaryPosition.x - pose.position.x,
+        pose.secondaryPosition.y - pose.position.y,
+      );
+      const headRadius = headDist * 0.55;
+      this.occluder.visible = true;
+      this.occluder.position.set(midX, midY - headRadius * 0.1, (pose.depthHint ?? 0) - 20);
+      this.occluder.scale.set(headRadius * 0.95, headRadius * 1.35, headRadius * 1.1);
+      this.occluder.rotation.y = pose.yaw ?? 0;
+      this.occluder.rotation.x = pose.pitch ?? 0;
+      this.occluder.rotation.z = -pose.rotationZ;
+    } else {
+      this.occluder.visible = false;
+    }
+
+    // Far-side earring fade when head turns past ~35 degrees (|yaw| > 0.61 rad)
+    let rootOpacity = this.currentOpacity;
+    let secOpacity  = this.currentOpacity;
+    if (pose.secondaryPosition && pose.yaw !== undefined) {
+      const FAR_YAW_THRESHOLD = 0.61; // ~35 deg
+      const FAR_YAW_MAX = 0.85;       // ~48.7 deg
+      const absYaw = Math.abs(pose.yaw);
+      if (absYaw > FAR_YAW_THRESHOLD) {
+        const fade = Math.max(0, 1 - (absYaw - FAR_YAW_THRESHOLD) / (FAR_YAW_MAX - FAR_YAW_THRESHOLD));
+        const primaryIsSmallerX = pose.position.x < pose.secondaryPosition.x;
+        if (pose.yaw > 0) {
+          if (primaryIsSmallerX) {
+            rootOpacity *= fade;
+          } else {
+            secOpacity *= fade;
+          }
+        } else {
+          if (primaryIsSmallerX) {
+            secOpacity *= fade;
+          } else {
+            rootOpacity *= fade;
+          }
+        }
+      }
+    }
+
     // Apply primary.
-    this.root.visible = true;
-    this.root.position.set(pose.position.x, pose.position.y, pose.depthHint ?? 0);
-    this.root.rotation.z = -pose.rotationZ;
     const s = Math.max(0.3, pose.scale) * 18;
-    this.root.scale.setScalar(s);
-    this._setGroupOpacity(this.root, this.currentOpacity);
+    if (rootOpacity > 0.01) {
+      this.root.visible = true;
+      this.root.position.set(pose.position.x, pose.position.y, pose.depthHint ?? 0);
+      this.root.rotation.z = -pose.rotationZ;
+      this.root.scale.setScalar(s);
+      this._setGroupOpacity(this.root, rootOpacity);
+    } else {
+      this.root.visible = false;
+    }
 
     // Apply secondary.
-    if (pose.secondaryPosition) {
+    if (pose.secondaryPosition && secOpacity > 0.01) {
       this.secondary.visible = true;
       this.secondary.position.set(
         pose.secondaryPosition.x,
@@ -307,7 +442,7 @@ export class ThreeRenderer {
       );
       this.secondary.rotation.z = pose.rotationZ;
       this.secondary.scale.setScalar(s);
-      this._setGroupOpacity(this.secondary, this.currentOpacity);
+      this._setGroupOpacity(this.secondary, secOpacity);
     } else {
       this.secondary.visible = false;
     }
@@ -318,7 +453,30 @@ export class ThreeRenderer {
     }
   }
 
-  // ─── Dispose ───────────────────────────────────────────────────────────────
+  getOccluder(): THREE.Mesh {
+    return this.occluder;
+  }
+
+  clearJewellery(): void {
+    this._clearGroups();
+    this.ready = false;
+    this.currentAssetUrl = null;
+    this.root.visible = false;
+    this.secondary.visible = false;
+    try {
+      this.renderer.clear();
+    } catch {
+      // In non-WebGL environments (e.g. testing) ignore clear error
+    }
+  }
+
+  hasActiveMesh(): boolean {
+    return this.ready && (this.root.children.length > 0 || this.secondary.children.length > 0);
+  }
+
+  getActiveUrl(): string | null {
+    return this.currentAssetUrl;
+  }
 
   dispose(): void {
     this._clearGroups();
@@ -480,5 +638,122 @@ function createGoldDropEarring(): THREE.Group {
   drop.position.y = -0.40;
 
   group.add(hook, connector, bead, stem, drop);
+  return group;
+}
+
+// ─── Procedural jewellery for other categories ──────────────────────────────
+
+function createGoldMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: 0xd4af37,
+    metalness: 0.95,
+    roughness: 0.18,
+    envMapIntensity: 1.0,
+  });
+}
+
+function createGemMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    metalness: 0.1,
+    roughness: 0.05,
+    envMapIntensity: 1.2,
+  });
+}
+
+function createChokerNecklace(): THREE.Group {
+  const group = new THREE.Group();
+  const gold = createGoldMaterial();
+  const gem = createGemMaterial();
+
+  // Collar collar curve (arc resting around clavicle / neck base)
+  const collar = new THREE.Mesh(
+    new THREE.TorusGeometry(1.6, 0.045, 16, 64, Math.PI * 0.8),
+    gold,
+  );
+  collar.rotation.z = Math.PI * 0.1;
+  collar.rotation.x = Math.PI * 0.25;
+
+  // Central bail ring
+  const bail = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.025, 12, 24), gold);
+  bail.position.set(0, -1.2, 0);
+
+  // Central pendant stone
+  const pendant = new THREE.Mesh(new THREE.OctahedronGeometry(0.32, 0), gem);
+  pendant.scale.set(0.85, 1.35, 0.85);
+  pendant.position.set(0, -1.55, 0.05);
+
+  group.add(collar, bail, pendant);
+  return group;
+}
+
+function createSeptumNoseRing(): THREE.Group {
+  const group = new THREE.Group();
+  const gold = createGoldMaterial();
+  const gem = createGemMaterial();
+
+  // Small hoop
+  const hoop = new THREE.Mesh(
+    new THREE.TorusGeometry(0.12, 0.022, 16, 32, Math.PI * 1.65),
+    gold,
+  );
+  hoop.rotation.z = Math.PI * 0.18;
+
+  // Diamond accent bead
+  const accent = new THREE.Mesh(new THREE.SphereGeometry(0.04, 16, 16), gem);
+  accent.position.set(0, -0.12, 0);
+
+  group.add(hoop, accent);
+  return group;
+}
+
+function createSolitaireRing(): THREE.Group {
+  const group = new THREE.Group();
+  const gold = createGoldMaterial();
+  const gem = createGemMaterial();
+
+  // Finger band
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.05, 16, 32), gold);
+
+  // Raised crown collet
+  const collet = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.05, 0.14, 12), gold);
+  collet.position.set(0, 0.32, 0);
+
+  // Center Solitaire
+  const stone = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), gem);
+  stone.position.set(0, 0.44, 0);
+
+  group.add(band, collet, stone);
+  return group;
+}
+
+function createKadaBangle(): THREE.Group {
+  const group = new THREE.Group();
+  const gold = createGoldMaterial();
+
+  // Main cuff
+  const cuff = new THREE.Mesh(new THREE.TorusGeometry(0.8, 0.075, 20, 48), gold);
+
+  // Twin ornamental terminal knobs
+  const leftKnob = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 16), gold);
+  leftKnob.position.set(-0.8, 0, 0);
+
+  const rightKnob = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 16), gold);
+  rightKnob.position.set(0.8, 0, 0);
+
+  group.add(cuff, leftKnob, rightKnob);
+  return group;
+}
+
+function createPlaceholderBadge(_category: string): THREE.Group {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xd4af37,
+    metalness: 0.8,
+    roughness: 0.2,
+    wireframe: true,
+  });
+  const box = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.05, 16, 32), mat);
+  group.add(box);
   return group;
 }

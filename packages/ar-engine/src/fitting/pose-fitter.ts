@@ -47,6 +47,10 @@ export class PoseFitter {
   private readonly springStiffness = 0.35;
   private readonly springDamping   = 0.72;
 
+  // Session fine-tune adjustments for edge cases (hair, collar, body variation)
+  private fineTuneScaleMul = 1.0;
+  private fineTuneOffsetY  = 0;
+
   constructor(
     private readonly profile: AnchorProfile,
     private readonly defaults: PoseFitterOptions,
@@ -54,6 +58,11 @@ export class PoseFitter {
     this.positionAlpha = defaults.positionAlpha ?? 0.40;
     this.rotationAlpha = defaults.rotationAlpha ?? 0.25;
     this.scaleAlpha    = defaults.scaleAlpha    ?? 0.22;
+  }
+
+  setFineTune(scaleMultiplier = 1.0, offsetY = 0): void {
+    this.fineTuneScaleMul = Math.max(0.5, Math.min(2.0, scaleMultiplier));
+    this.fineTuneOffsetY  = offsetY;
   }
 
   fit(landmarks: LandmarkResult | null): PoseFit {
@@ -77,6 +86,19 @@ export class PoseFitter {
           confidence: this.visibilityAlpha * 0.3,
         };
       }
+      return invisible;
+    }
+
+    // If profile relies on shoulder/neck anchor and shoulders are not visible,
+    // do not render jewellery in a misplaced location.
+    if (
+      landmarks.shouldersVisible === false &&
+      (this.profile.primaryAnchor === 'NECK_BASE' ||
+        this.profile.primaryAnchor === 'COLLARBONE' ||
+        this.profile.primaryAnchor === 'NECKLACE_ANCHOR' ||
+        this.profile.scaleRef === 'SHOULDER_WIDTH')
+    ) {
+      this.visibilityAlpha = 0;
       return invisible;
     }
 
@@ -108,7 +130,12 @@ export class PoseFitter {
     // Depth-aware scale: if z-coordinates are available, adjust by relative depth.
     const primaryZ = (primary as { z?: number }).z;
     if (primaryZ != null && Number.isFinite(primaryZ)) {
-      const refKey = landmarks.kind === 'face' ? 'NOSE_TIP' : 'WRIST';
+      const refKey =
+        landmarks.kind === 'face'
+          ? 'NOSE_TIP'
+          : landmarks.kind === 'pose'
+            ? 'NECK_BASE'
+            : 'WRIST';
       const refZ = (landmarks.named[refKey] as { z?: number } | undefined)?.z;
       if (refZ != null && Number.isFinite(refZ)) {
         const depthFactor = Math.max(0.6, Math.min(1.4, 1 + (refZ - primaryZ) * 0.008));
@@ -118,11 +145,11 @@ export class PoseFitter {
 
     const minS = this.profile.minScale ?? 0.2;
     const maxS = this.profile.maxScale ?? 3;
-    targetScale = Math.min(maxS, Math.max(minS, targetScale));
+    targetScale = Math.min(maxS, Math.max(minS, targetScale * this.fineTuneScaleMul));
 
     // ── Offset ────────────────────────────────────────────────────────────
     const ox = (this.profile.offset?.x ?? 0) * liveScale;
-    const oy = (this.profile.offset?.y ?? 0) * liveScale;
+    const oy = (this.profile.offset?.y ?? 0) * liveScale + this.fineTuneOffsetY;
 
     // ── Rotation ──────────────────────────────────────────────────────────
     let targetRotation = this.defaults.rotationZ;
@@ -138,6 +165,11 @@ export class PoseFitter {
         targetRotation = rotPt.x; // pre-computed angle stored in x
       } else if (dirPt) {
         targetRotation = Math.atan2(dirPt.y, dirPt.x);
+      }
+    } else if (landmarks.kind === 'pose') {
+      const shoulderRot = landmarks.named['SHOULDER_ROT'];
+      if (shoulderRot && Number.isFinite(shoulderRot.x)) {
+        targetRotation = shoulderRot.x;
       }
     } else if (landmarks.kind === 'hand') {
       // Bangle/bracelet: prefer BANGLE_ROT, fallback to WRIST_DIR
@@ -219,6 +251,9 @@ export class PoseFitter {
       this.smoothSecPos = null;
     }
 
+    const yaw = landmarks.named['HEAD_YAW']?.x;
+    const pitch = landmarks.named['HEAD_ROLL']?.y;
+
     return {
       position:          { x: this.smoothPos!.x, y: this.smoothPos!.y },
       secondaryPosition: this.smoothSecPos
@@ -229,6 +264,8 @@ export class PoseFitter {
       confidence:        landmarks.confidence * this.visibilityAlpha,
       visible:           true,
       depthHint,
+      yaw,
+      pitch,
     };
   }
 

@@ -3,6 +3,7 @@ import { CameraEngine } from './camera/camera-engine.js';
 import type { CameraHealthStatus } from './camera/camera-engine.js';
 import { FaceDetector } from './detectors/face-detector.js';
 import { HandDetector } from './detectors/hand-detector.js';
+import { PoseDetector } from './detectors/pose-detector.js';
 import { AnchorRegistry } from './anchors/anchor-registry.js';
 import { LandmarkProcessor } from './landmarks/landmark-processor.js';
 import { PoseFitter } from './fitting/pose-fitter.js';
@@ -14,8 +15,11 @@ import { Canvas2dRenderer } from './renderers/canvas2d-renderer.js';
 import { ThreeRenderer } from './renderers/three-renderer.js';
 import { CaptureCompositor } from './capture/capture-compositor.js';
 import { LightingEstimator } from './imaging/lighting-estimator.js';
+import { BodyModelEstimator } from './landmarks/body-model-estimator.js';
+import type { BodyModelMeasurements } from './landmarks/body-model-estimator.js';
 import { initTfBackend } from './models/tf-backend.js';
 import type { ModelAdapter } from './models/model-adapter.js';
+import { isFaceCentered } from './tracking/face-guide-state.js';
 import type {
   ArEngineConfig,
   ArEngineEvents,
@@ -89,6 +93,11 @@ export class ArEngine {
 
   private lastPose:      PoseFit       | null = null;
   private lastLandmarks: LandmarkResult | null = null;
+  private lastLuma:      number | null = null;
+
+  private readonly bodyModel = new BodyModelEstimator();
+  private fineTuneScale = 1.0;
+  private fineTuneOffsetY = 0;
 
   private status: TrackingStatus = 'INITIALIZING';
   private listeners = new Set<Listener>();
@@ -124,9 +133,11 @@ export class ArEngine {
     try {
       await this.camera.init(host.video, { facing: 'user' });
     } catch (err) {
-      // Try permission recovery then retry.
-      await this.camera.recoverPermission();
-      await this.camera.init(host.video, { facing: 'user' });
+      try {
+        await this.camera.recoverPermission();
+      } catch {
+        throw err;
+      }
     }
 
     // Camera health monitoring
@@ -143,11 +154,9 @@ export class ArEngine {
       }
     });
 
-    // Detector
+    // Detector (lazy-loaded based on category)
     const registration = AnchorRegistry.get(config.jewelleryKind);
-    this.detector = registration.detector === 'hand'
-      ? new HandDetector()
-      : new FaceDetector();
+    this.detector = this._createDetector(registration.detector);
     await this.detector.load();
 
     // Tracking engine with status callback
@@ -164,6 +173,7 @@ export class ArEngine {
       rotationZ:   ((config.defaultRotationZ ?? 0) * Math.PI) / 180,
       fingerIndex: config.fingerIndex,
     });
+    this.fitter.setFineTune(this.fineTuneScale, this.fineTuneOffsetY);
 
     // Renderers
     const ctx = host.overlayCanvas.getContext('2d');
@@ -184,6 +194,12 @@ export class ArEngine {
   async setJewellery(config: JewelleryConfig): Promise<void> {
     if (!this.host || !this.canvasRenderer) return;
 
+    // Fully clear previous active asset from both renderers
+    if (this.threeRenderer) {
+      this.threeRenderer.clearJewellery();
+    }
+    this.canvasRenderer.clearJewellery();
+
     // Update fitter for new kind / anchor.
     const profile = AnchorRegistry.mergeProfile(config.jewelleryKind, config.anchorProfile);
     this.fitter = new PoseFitter(profile, {
@@ -191,19 +207,15 @@ export class ArEngine {
       rotationZ:   ((config.defaultRotationZ ?? 0) * Math.PI) / 180,
       fingerIndex: config.fingerIndex,
     });
+    this.fitter.setFineTune(this.fineTuneScale, this.fineTuneOffsetY);
 
-    // If kind changed, swap detector.
+    // If kind changed, swap detector (lazy load only what is needed).
     const registration = AnchorRegistry.get(config.jewelleryKind);
-    const needsNewDetector =
-      !this.detector ||
-      (registration.detector === 'hand'  && this.detector.name !== 'hand') ||
-      (registration.detector === 'face'  && this.detector.name !== 'face');
+    const needsNewDetector = !this.detector || this.detector.name !== registration.detector;
 
     if (needsNewDetector) {
       this.detector?.dispose();
-      this.detector = registration.detector === 'hand'
-        ? new HandDetector()
-        : new FaceDetector();
+      this.detector = this._createDetector(registration.detector);
       await this.detector.load();
       this.processor.reset();
       this.tracker.reset();
@@ -212,10 +224,8 @@ export class ArEngine {
     // Load the new asset.
     await this._loadAsset(config);
 
-    // Update config reference.
-    if (this.config) {
-      this.config = { ...this.config, ...config };
-    }
+    // Replace config reference completely so old properties do not leak
+    this.config = { ...config };
 
     this.emit({ status: this.status, fps: this.fpsMeter.getFps(), assetReady: true });
   }
@@ -237,6 +247,14 @@ export class ArEngine {
 
   setMirrored(on: boolean): void {
     this.mirrored = on;
+  }
+
+  isMirrored(): boolean {
+    return this.mirrored;
+  }
+
+  getFacing(): 'user' | 'environment' {
+    return this.camera.getFacing();
   }
 
   async flipCamera(): Promise<void> {
@@ -266,6 +284,18 @@ export class ArEngine {
 
   static listCameraCapabilities() {
     return CameraEngine.listCapabilities();
+  }
+
+  // ─── Universal Fit & Fine-Tuning ──────────────────────────────────────────
+
+  setFineTune(scaleMultiplier = 1.0, offsetY = 0): void {
+    this.fineTuneScale = scaleMultiplier;
+    this.fineTuneOffsetY = offsetY;
+    this.fitter?.setFineTune(scaleMultiplier, offsetY);
+  }
+
+  getBodyModel(): BodyModelMeasurements {
+    return this.bodyModel.getMeasurements();
   }
 
   // ─── Capture ───────────────────────────────────────────────────────────────
@@ -376,9 +406,9 @@ export class ArEngine {
           this.syncCanvasSizes();
         }
 
-        // Clear overlay; video draw is composited separately.
+        // Clear overlay for transparent 2D jewellery/landmarks rendering;
+        // video background is rendered by host video element in UI wrapper.
         this.canvasRenderer.clear();
-        this.canvasRenderer.drawVideo(video, this.mirrored);
 
         // Adapt quality tier to Three.js renderer
         const tier = this.adaptive.getQualityTier();
@@ -389,17 +419,18 @@ export class ArEngine {
         // Skip render if adaptive controller says we're under budget.
         const skipRender = this.adaptive.shouldSkipRender();
 
-        if (this.frameIndex % 8 === 0 && this.threeRenderer) {
+        if (this.frameIndex % 8 === 0) {
           const size = this.lastPose?.scale ? this.lastPose.scale * 4 : video.videoWidth * 0.35;
-          const sampleX = this.lastPose
-            ? (this.mirrored ? video.videoWidth - this.lastPose.position.x : this.lastPose.position.x)
-            : video.videoWidth / 2;
+          const sampleX = this.lastPose ? this.lastPose.position.x : video.videoWidth / 2;
           const luma = this.lighting.estimate(video, {
             x: sampleX,
             y: this.lastPose?.position.y ?? video.videoHeight / 2,
             size,
           });
-          this.threeRenderer.setExposure(luma);
+          this.lastLuma = luma;
+          if (this.threeRenderer) {
+            this.threeRenderer.setExposure(luma);
+          }
         }
 
         if (this.adaptive.shouldDetect(this.frameIndex)) {
@@ -413,7 +444,9 @@ export class ArEngine {
         }
 
         const rawPose = this.fitter.fit(this.lastLandmarks);
-        const pose    = this.mirrorPose(rawPose, this.host.overlayCanvas.width);
+        // Engine coordinates stay in raw unmirrored camera pixel space.
+        // Live preview mirroring is handled cleanly by CSS transform on the shared UI viewport.
+        const pose    = rawPose;
         this.lastPose = pose;
         this.status   = this.tracker.update(pose);
 
@@ -423,31 +456,28 @@ export class ArEngine {
         }
 
         if (!skipRender && this.status !== 'LOST' && pose.visible) {
-          if (this.threeRenderer) {
+          const is3d = this.is3DAsset(this.config);
+          if (is3d && this.threeRenderer) {
             this.threeRenderer.render(pose);
-          } else {
-            this.canvasRenderer.drawJewellery(pose, false);
+          } else if (!is3d && this.canvasRenderer) {
+            this.canvasRenderer.drawJewellery(pose, false, this.config?.jewelleryKind);
             if (pose.secondaryPosition && this.config?.mirrorForOppositeEar !== false) {
-              this.canvasRenderer.drawJewellery(pose, true);
+              this.canvasRenderer.drawJewellery(pose, true, this.config?.jewelleryKind);
             }
           }
-        } else if (this.threeRenderer) {
+        } else if (this.is3DAsset(this.config) && this.threeRenderer) {
           this.threeRenderer.render({ ...pose, visible: pose.visible && this.status !== 'LOST' });
         }
 
-        // Draw debug landmarks.
-        if (this.debugLandmarks && this.lastLandmarks) {
-          const named  = this.lastLandmarks.named;
-          const width  = this.host.overlayCanvas.width;
-          const mirroredNamed = this.mirrored
-            ? Object.fromEntries(
-                Object.entries(named).map(([k, v]) => [k, { x: width - v.x, y: v.y }]),
-              )
-            : named;
-          const keys = this.lastLandmarks.kind === 'face'
-            ? FACE_LANDMARK_KEYS
-            : HAND_LANDMARK_KEYS;
-          this.canvasRenderer.drawLandmarks(mirroredNamed, keys, 'dots');
+        // Draw debug overlay (?debug=1): landmarks, anchor point, measured widths, and live FPS HUD
+        if (this.debugLandmarks && this.canvasRenderer) {
+          this.canvasRenderer.drawDebugOverlay({
+            landmarks: this.lastLandmarks,
+            pose,
+            fps: Math.round(this.fpsMeter.getFps()),
+            latencyMs: performance.now() - t0,
+            status: this.status,
+          });
         }
       }
     } catch (err) {
@@ -462,12 +492,103 @@ export class ArEngine {
     const dt = performance.now() - t0;
     this.adaptive.recordFrameMs(dt);
     const fps = this.fpsMeter.tick();
-    this.emit({ status: this.status, fps, latencyMs: dt });
+
+    let promptMessage: string | undefined;
+    let shouldersVisible: boolean | undefined;
+
+    // Hint 1: Low light warning
+    if (this.lastLuma != null && this.lastLuma < 0.20 && this.status === 'TRACKING') {
+      promptMessage = 'Please increase lighting';
+    }
+
+    // Hint 2: Shoulder visibility for necklace fitting
+    if (this.lastLandmarks?.kind === 'pose') {
+      shouldersVisible = this.lastLandmarks.shouldersVisible !== false;
+      if (!shouldersVisible && this.config?.jewelleryKind === 'NECKLACE') {
+        promptMessage = 'Move back so your shoulders are visible';
+      }
+    }
+
+    // Hint 3: Hand truncation warning for rings and bangles
+    if (this.lastLandmarks?.kind === 'hand') {
+      const wrist = this.lastLandmarks.named['WRIST'];
+      const videoW = this.host?.video.videoWidth || 640;
+      const videoH = this.host?.video.videoHeight || 480;
+      if (
+        wrist &&
+        (wrist.x < videoW * 0.05 ||
+          wrist.x > videoW * 0.95 ||
+          wrist.y < videoH * 0.05 ||
+          wrist.y > videoH * 0.95)
+      ) {
+        promptMessage = 'Show your full hand';
+      }
+    }
+
+    // Universal Fit: update biometric body proportions every frame
+    if (this.lastLandmarks) {
+      this.bodyModel.estimate(this.lastLandmarks);
+    }
+
+    let faceCentered = false;
+    if (this.status === 'TRACKING' && this.lastLandmarks) {
+      const p =
+        this.lastLandmarks.named['NOSE'] ??
+        this.lastLandmarks.named['NOSE_TIP'] ??
+        this.lastLandmarks.named['CHIN'] ??
+        this.lastLandmarks.named['NECK_BASE'];
+      const videoW = this.host?.video.videoWidth || this.host?.overlayCanvas.width || 640;
+      const videoH = this.host?.video.videoHeight || this.host?.overlayCanvas.height || 480;
+      if (p && videoW > 0 && videoH > 0) {
+        faceCentered = isFaceCentered(p, { width: videoW, height: videoH });
+      } else {
+        faceCentered = true;
+      }
+    }
+
+    this.emit({
+      status: this.status,
+      fps,
+      latencyMs: dt,
+      shouldersVisible,
+      promptMessage,
+      faceCentered,
+    });
     this.frameIndex += 1;
     this.raf = requestAnimationFrame(() => void this.loop());
   };
 
   // ─── Private helpers ───────────────────────────────────────────────────────
+
+  is3DAsset(config?: JewelleryConfig | null): boolean {
+    if (!config) return false;
+    const type = String(config.assetType);
+    if (type === 'IMAGE_OVERLAY' || type === 'IMAGE_2D') return false;
+    if (
+      type === 'MODEL_GLB' ||
+      type === 'MODEL_GLTF' ||
+      type === 'MODEL_3D' ||
+      type === 'PROCEDURAL'
+    ) {
+      return true;
+    }
+    const url = config.assetUrl || '';
+    if (url.startsWith('procedural://')) return true;
+    if (url.endsWith('.glb') || url.endsWith('.gltf')) return true;
+    return false;
+  }
+
+  getThreeRenderer(): ThreeRenderer | null {
+    return this.threeRenderer;
+  }
+
+  getCanvasRenderer(): Canvas2dRenderer | null {
+    return this.canvasRenderer;
+  }
+
+  getActiveConfig(): JewelleryConfig | null {
+    return this.config;
+  }
 
   private async _loadAsset(config: JewelleryConfig): Promise<void> {
     let lastError: unknown;
@@ -491,33 +612,45 @@ export class ArEngine {
   private async _loadAssetOnce(config: JewelleryConfig): Promise<void> {
     if (!this.host || !this.canvasRenderer) return;
 
-    const use3d =
-      config.assetType === 'MODEL_GLB' ||
-      config.assetType === 'MODEL_GLTF' ||
-      config.assetUrl  === 'procedural://earring';
+    const use3d = this.is3DAsset(config);
 
     if (use3d && this.host.threeCanvas) {
+      // Clear 2D renderer so no lingering 2D image is drawn
+      this.canvasRenderer.clearJewellery();
+
       if (!this.threeRenderer) {
         this.threeRenderer = new ThreeRenderer(this.host.threeCanvas);
         this.syncCanvasSizes();
+      } else {
+        this.threeRenderer.clearJewellery();
       }
+
       await this.threeRenderer.loadModel(
-        config.assetUrl || 'procedural://earring',
-        config.mirrorForOppositeEar ?? true,
+        config.assetUrl || `procedural://${config.jewelleryKind.toLowerCase()}`,
+        config.mirrorForOppositeEar ?? (config.jewelleryKind === 'EARRINGS'),
       );
-    } else if (config.assetType === 'IMAGE_OVERLAY' || !use3d) {
-      if (config.assetUrl && config.assetUrl !== 'procedural://earring') {
+    } else {
+      // Clear 3D renderer completely so previous mesh does not remain frozen
+      if (this.threeRenderer) {
+        this.threeRenderer.clearJewellery();
+      }
+      this.canvasRenderer.clearJewellery();
+
+      if (config.assetUrl && !config.assetUrl.startsWith('procedural://')) {
         await this.canvasRenderer.loadOverlay(
           config.assetUrl,
           config.mirrorForOppositeEar ?? false,
         );
       } else if (this.host.threeCanvas) {
-        // Fallback procedural 3-D earring.
+        // Fallback to procedural 3D model for this specific category if no 2D image url
         if (!this.threeRenderer) {
           this.threeRenderer = new ThreeRenderer(this.host.threeCanvas);
           this.syncCanvasSizes();
         }
-        this.threeRenderer.loadProceduralEarring(config.mirrorForOppositeEar ?? true);
+        this.threeRenderer.loadProcedural(
+          config.jewelleryKind.toLowerCase(),
+          config.mirrorForOppositeEar ?? (config.jewelleryKind === 'EARRINGS'),
+        );
       }
     }
 
@@ -570,11 +703,23 @@ export class ArEngine {
     }, delay);
   }
 
+  private _createDetector(detectorKind: 'face' | 'hand' | 'pose'): ModelAdapter {
+    switch (detectorKind) {
+      case 'pose':
+        return new PoseDetector();
+      case 'hand':
+        return new HandDetector();
+      case 'face':
+      default:
+        return new FaceDetector();
+    }
+  }
+
   private emit(events: ArEngineEvents): void {
     for (const listener of this.listeners) listener(events);
   }
 }
 
-export function detectorForKind(kind: JewelleryKind): 'face' | 'hand' {
+export function detectorForKind(kind: JewelleryKind): 'face' | 'hand' | 'pose' {
   return AnchorRegistry.get(kind).detector;
 }

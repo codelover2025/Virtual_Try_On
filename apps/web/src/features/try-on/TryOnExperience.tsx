@@ -13,6 +13,9 @@ import {
   Info,
   Maximize2,
   Minimize2,
+  WifiOff,
+  Sliders,
+  RotateCcw,
 } from 'lucide-react';
 import {
   Button,
@@ -33,6 +36,11 @@ import { api } from '@/lib/api';
 import { assetCache } from '@/lib/asset-cache';
 import { useTryOnStore } from '@/stores/try-on-store';
 import { toJewelleryConfig, uploadCapture } from './try-on-bridge';
+import {
+  cacheCatalogue,
+  getCachedOrFallbackCatalogue,
+  getProductFromCacheOrFallback,
+} from './offline-catalog';
 import { TryOnCategorySwitch } from '@/components/try-on/try-on-category-switch';
 import { TryOnLoadingState } from '@/components/try-on/try-on-loading-state';
 import { TryOnErrorState } from '@/components/try-on/try-on-error-state';
@@ -74,6 +82,27 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
     setMirrorOn,
   } = useTryOnStore();
 
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+  const [fineTuneScale, setFineTuneScale] = useState(1.0);
+  const [fineTuneY, setFineTuneY] = useState(0);
+
+  const handleFineTuneChange = (scale: number, y: number) => {
+    setFineTuneScale(scale);
+    setFineTuneY(y);
+    engineRef.current?.setFineTune(scale, y);
+  };
+
+  const handleResetFineTune = () => {
+    setFineTuneScale(1.0);
+    setFineTuneY(0);
+    engineRef.current?.setFineTune(1.0, 0);
+  };
+
+  const isDebugMode =
+    typeof window !== 'undefined' &&
+    (new URLSearchParams(window.location.search).get('debug') === '1' ||
+      new URLSearchParams(window.location.search).get('debug') === 'true');
+
   // If initialProduct changes externally (e.g. navigation)
   useEffect(() => {
     setCurrentProduct(initialProduct);
@@ -82,7 +111,22 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   // Load alternative products for in-studio switcher if not provided
   const catalogQuery = useQuery({
     queryKey: queryKeys.products.list({ pageSize: 16 }),
-    queryFn: () => api.catalog.listProducts({ pageSize: 16 }),
+    queryFn: async () => {
+      try {
+        const res = await api.catalog.listProducts({ pageSize: 16 });
+        cacheCatalogue(res.items);
+        return res;
+      } catch {
+        const fallback = getCachedOrFallbackCatalogue();
+        return {
+          items: fallback,
+          total: fallback.length,
+          page: 1,
+          pageSize: fallback.length,
+          totalPages: 1,
+        };
+      }
+    },
     enabled: !alternativeProducts || alternativeProducts.length === 0,
   });
 
@@ -107,17 +151,33 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
       : selectorItems.filter((item) => item.jewelleryKind === kindFilter);
   const selectorKey = selectorItems.map((item) => item.id).join(',');
 
-  // Start AR session with API
+  // Start AR session with API (falls back gracefully to client-side session when backend is offline)
   const sessionQuery = useQuery({
     queryKey: ['try-on', 'bootstrap', currentProduct.id],
-    queryFn: () =>
-      api.tryOn.startSession({
-        productId: currentProduct.id,
-        clientInfo: {
-          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'browser',
-          deviceClass: typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches ? 'mobile' : 'desktop',
-        },
-      }),
+    queryFn: async () => {
+      try {
+        const session = await api.tryOn.startSession({
+          productId: currentProduct.id,
+          clientInfo: {
+            userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'browser',
+            deviceClass:
+              typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+                ? 'mobile'
+                : 'desktop',
+          },
+        });
+        setIsOfflineMode(false);
+        return session;
+      } catch {
+        // Backend offline: client-side engine still functions fully
+        setIsOfflineMode(true);
+        return {
+          sessionId: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          asset: currentProduct.tryOnAsset,
+          isOffline: true,
+        };
+      }
+    },
   });
 
   useEffect(() => {
@@ -125,9 +185,16 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   }, [sessionQuery.data?.sessionId, setSessionId]);
 
   useEffect(() => {
-    return () => {
+    const handleLeave = () => {
       engineRef.current?.stop();
       engineRef.current = null;
+    };
+    window.addEventListener('beforeunload', handleLeave);
+    window.addEventListener('pagehide', handleLeave);
+    return () => {
+      window.removeEventListener('beforeunload', handleLeave);
+      window.removeEventListener('pagehide', handleLeave);
+      handleLeave();
     };
   }, []);
 
@@ -157,7 +224,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   }, [selectorKey]);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || isOfflineMode || sessionId.startsWith('offline-')) return;
     const flush = () => {
       const metrics = engineRef.current?.getMetrics();
       if (metrics) {
@@ -186,7 +253,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
       window.clearInterval(heartTimer);
       flush();
     };
-  }, [sessionId]);
+  }, [sessionId, isOfflineMode]);
 
   const asset = sessionQuery.data?.asset ?? currentProduct.tryOnAsset;
 
@@ -199,13 +266,24 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
       const engine = new ArEngine();
       engineRef.current = engine;
       engine.on((e) => {
-        setHud({ status: e.status, fps: Math.round(e.fps), error: e.error });
+        setHud({
+          status: e.status,
+          fps: Math.round(e.fps),
+          error: e.error,
+          promptMessage: e.promptMessage,
+          shouldersVisible: e.shouldersVisible,
+          faceCentered: e.faceCentered,
+        });
         setTracking(e.status === 'TRACKING');
         if (e.status !== lastStatus.current) {
           lastStatus.current = e.status;
-          pendingEvents.current.push({ type: 'tracking_change', value: e.status });
+          if (!isOfflineMode) {
+            pendingEvents.current.push({ type: 'tracking_change', value: e.status });
+          }
         }
-        if (e.error) pendingEvents.current.push({ type: 'engine_error', value: e.error });
+        if (e.error && !isOfflineMode) {
+          pendingEvents.current.push({ type: 'engine_error', value: e.error });
+        }
       });
 
       const config = await toJewelleryConfig(currentProduct.jewelleryKind, asset);
@@ -219,12 +297,28 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
           ...config,
           mirroredPreview: mirrorOn,
           targetFps: 30,
+          debugLandmarks: isDebugMode,
         },
       );
       setRunning(true);
       toast.success('Studio camera connected');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not access camera');
+    } catch (err: unknown) {
+      const errorObj = err as { name?: string; message?: string };
+      const errName = errorObj?.name || '';
+      const errMsg = errorObj?.message || '';
+
+      let friendlyMessage = 'Could not access camera. Please check device permissions and try again.';
+      if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError' || /permission/i.test(errMsg)) {
+        friendlyMessage = 'Camera permission denied. Please allow camera access in your browser settings to try on jewellery.';
+      } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError' || /not found/i.test(errMsg)) {
+        friendlyMessage = 'No camera detected on this device. Please connect a webcam or switch to a smartphone with a camera.';
+      } else if (errName === 'NotReadableError' || errName === 'TrackStartError' || /in use/i.test(errMsg)) {
+        friendlyMessage = 'Camera is currently in use by another application. Please close other camera tabs/apps and retry.';
+      } else if (errName === 'OverconstrainedError') {
+        friendlyMessage = 'Camera does not support requested resolution. Trying fallback settings…';
+      }
+
+      toast.error(friendlyMessage);
       setRunning(false);
     } finally {
       setStarting(false);
@@ -242,6 +336,10 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   async function flipCamera() {
     try {
       await engineRef.current?.flipCamera();
+      const isMirrored = engineRef.current?.isMirrored();
+      if (typeof isMirrored === 'boolean') {
+        setMirrorOn(isMirrored);
+      }
       toast.info('Camera switched');
     } catch {
       toast.error('Unable to flip camera on this device');
@@ -259,7 +357,14 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
     if (item.id === currentProduct.id) return;
     try {
       toast.info(`Fitting ${item.name}…`);
-      const detail = await api.catalog.getProduct(item.id);
+      let detail: ProductDetailDto;
+      try {
+        detail = await api.catalog.getProduct(item.id);
+      } catch {
+        const fallback = getProductFromCacheOrFallback(item.id);
+        if (!fallback) throw new Error('Product not found in catalogue');
+        detail = fallback;
+      }
       setCurrentProduct(detail);
 
       // Update URL silently without full navigation
@@ -272,11 +377,13 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
         await engineRef.current.setJewellery(
           await toJewelleryConfig(detail.jewelleryKind, detail.tryOnAsset),
         );
-        pendingEvents.current.push({
-          type: 'product_swap',
-          value: detail.id,
-          meta: { jewelleryKind: detail.jewelleryKind },
-        });
+        if (!isOfflineMode) {
+          pendingEvents.current.push({
+            type: 'product_swap',
+            value: detail.id,
+            meta: { jewelleryKind: detail.jewelleryKind },
+          });
+        }
         toast.success(`Now wearing ${detail.name}`);
       }
     } catch (err) {
@@ -298,7 +405,9 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
       });
       setCurrentCaptureBlob(shot.blob);
       setCaptureMeta({ width: shot.width, height: shot.height });
-      pendingEvents.current.push({ type: 'capture', value: shot.width });
+      if (!isOfflineMode) {
+        pendingEvents.current.push({ type: 'capture', value: shot.width });
+      }
       const url = URL.createObjectURL(shot.blob);
       setPreviewUrl(url);
       setCaptureOpen(true);
@@ -308,10 +417,23 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
     }
   };
 
-  // Save capture to user lookbook / server
+  // Save capture to user lookbook / server (with direct download in offline mode)
   const saveCaptureMutation = useMutation({
     mutationFn: async () => {
-      if (!sessionId || !currentCaptureBlob) throw new Error('No active try-on session');
+      if (!currentCaptureBlob) throw new Error('No snapshot captured');
+      if (isOfflineMode || sessionId?.startsWith('offline-')) {
+        // In offline mode, download directly to user's device
+        const url = URL.createObjectURL(currentCaptureBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `tryon-${currentProduct.slug}-${Date.now()}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return { id: `local-${Date.now()}`, storageKey: 'local' };
+      }
+      if (!sessionId) throw new Error('No active try-on session');
       return uploadCapture({
         sessionId,
         blob: currentCaptureBlob,
@@ -322,28 +444,36 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
     onSuccess: (data) => {
       setLastCaptureId(data.id);
       setIsSavedInSession(true);
+      if (isOfflineMode || sessionId?.startsWith('offline-')) {
+        toast.success('Snapshot saved directly to your device');
+      }
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : 'Could not save capture to account');
     },
   });
 
-  if (sessionQuery.isLoading) {
+  if (sessionQuery.isLoading && !isOfflineMode) {
     return <TryOnLoadingState label="Initializing Luxury AR Studio…" subtext="Calibrating 3D sensors and camera stream" />;
-  }
-
-  if (sessionQuery.isError) {
-    return (
-      <TryOnErrorState
-        title="Studio Connection Issue"
-        description="We could not initiate your virtual fitting session. Please check your network connection."
-        onRetry={() => sessionQuery.refetch()}
-      />
-    );
   }
 
   return (
     <div className="space-y-6">
+      {/* Offline Mode Indicator Banner */}
+      {isOfflineMode && (
+        <div className="flex items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
+          <div className="flex items-center gap-2.5">
+            <WifiOff className="h-4 w-4 text-amber-400 shrink-0" />
+            <span>
+              <strong>Offline Studio Mode:</strong> Running client-side AR engine with bundled catalogue. Live virtual fitting and photo snapshots remain fully operational.
+            </span>
+          </div>
+          <Badge variant="outline" className="border-amber-400/50 text-amber-300 shrink-0 ml-3">
+            Offline Ready
+          </Badge>
+        </div>
+      )}
+
       {/* Studio Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
         <div>
@@ -351,6 +481,11 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
             <Badge variant="outline" className="border-primary/40 text-primary">
               Live Fitting
             </Badge>
+            {isDebugMode && (
+              <Badge variant="outline" className="border-amber-400 bg-amber-500/10 text-amber-300 font-mono text-[11px]">
+                DEBUG (?debug=1)
+              </Badge>
+            )}
             <span className="text-xs text-muted-foreground uppercase tracking-widest font-mono">
               Session: {sessionId ? sessionId.slice(0, 8) : 'Direct'}
             </span>
@@ -471,6 +606,58 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
                 <Button variant="outline" size="icon" className="rounded-full shrink-0">
                   <Heart className="h-4 w-4" />
                 </Button>
+              </div>
+            </div>
+
+            {/* Atelier Fit Fine-Tuning (Universal Fit Session Controls) */}
+            <div className="rounded-3xl border bg-card p-5 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sliders className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-medium">Fine-Tune Fit</span>
+                </div>
+                {(fineTuneScale !== 1.0 || fineTuneY !== 0) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleResetFineTune}
+                    className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    <RotateCcw className="h-3 w-3 mr-1" /> Reset
+                  </Button>
+                )}
+              </div>
+              <div className="space-y-3 text-xs">
+                <div>
+                  <div className="flex justify-between text-muted-foreground mb-1">
+                    <span>Size Ratio</span>
+                    <span className="font-mono text-[11px] text-foreground">{Math.round(fineTuneScale * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.80"
+                    max="1.20"
+                    step="0.02"
+                    value={fineTuneScale}
+                    onChange={(e) => handleFineTuneChange(parseFloat(e.target.value), fineTuneY)}
+                    className="w-full accent-primary cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <div className="flex justify-between text-muted-foreground mb-1">
+                    <span>Vertical Position</span>
+                    <span className="font-mono text-[11px] text-foreground">{fineTuneY > 0 ? `+${fineTuneY}` : fineTuneY} px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-25"
+                    max="25"
+                    step="1"
+                    value={fineTuneY}
+                    onChange={(e) => handleFineTuneChange(fineTuneScale, parseInt(e.target.value, 10))}
+                    className="w-full accent-primary cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
 

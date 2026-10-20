@@ -9,7 +9,9 @@ coverage
 *.log
 .DS_Store
 apps/api/prisma/*.db
-uploads
+/uploads
 tmp
 storage-data
 apps/api/storage-data
+*.tsbuildinfo
+pnpm.cmd

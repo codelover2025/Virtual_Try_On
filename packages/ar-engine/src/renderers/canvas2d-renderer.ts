@@ -88,7 +88,7 @@ export class Canvas2dRenderer {
     this.ctx.restore();
   }
 
-  drawJewellery(pose: PoseFit, secondary = false): void {
+  drawJewellery(pose: PoseFit, secondary = false, kind?: string): void {
     if (!this.image || !pose.visible) return;
 
     // Advance opacity with smooth interpolation.
@@ -103,31 +103,106 @@ export class Canvas2dRenderer {
     const img = this.image;
     const pos = secondary && pose.secondaryPosition ? pose.secondaryPosition : pose.position;
 
-    // Scale image proportionally to face/hand scale.
-    const baseSize = Math.max(img.naturalWidth, img.naturalHeight);
-    const displaySize = baseSize * pose.scale * 0.15;
-    const w = (img.naturalWidth  / baseSize) * displaySize;
-    const h = (img.naturalHeight / baseSize) * displaySize;
+    const isNecklace =
+      kind === 'NECKLACE' ||
+      kind === 'PENDANT' ||
+      kind === 'MANGALSUTRA' ||
+      this.currentUrl.includes('neck') ||
+      this.currentUrl.includes('pendant');
+
+    let w: number;
+    let h: number;
+    let originX: number;
+    let originY: number;
+
+    const aspect = img.naturalWidth > 0 && img.naturalHeight > 0
+      ? img.naturalHeight / img.naturalWidth
+      : 260 / 320;
+
+    if (isNecklace) {
+      // Real anatomical scale: necklace spans ~68-75% of biacromial shoulder width
+      // pose.scale is (shoulderWidth / 100) * defaultScale
+      // For average adult shoulder span of 300px in camera, w ≈ 210-230px
+      const shoulderSpan = pose.scale * 100;
+      w = Math.max(160, Math.min(480, shoulderSpan * 0.72));
+      h = w * aspect;
+      // Anchor origin at the top collar curve (y ~ 0.12 of asset height)
+      originX = -w / 2;
+      originY = -h * 0.12;
+    } else {
+      const isEarring = kind === 'EARRINGS' || this.currentUrl.includes('earring');
+      if (isEarring) {
+        w = Math.max(20, Math.min(100, pose.scale * 34));
+        h = w * aspect;
+        originX = -w / 2;
+        originY = -h * 0.08;
+      } else {
+        const baseSize = Math.max(img.naturalWidth, img.naturalHeight);
+        const displaySize = Math.max(20, baseSize * pose.scale * 0.35);
+        w = (img.naturalWidth / baseSize) * displaySize;
+        h = (img.naturalHeight / baseSize) * displaySize;
+        originX = -w / 2;
+        originY = -h / 2;
+      }
+    }
+
+    let alpha = this.currentOpacity * (pose.confidence > 0 ? Math.min(1, pose.confidence + 0.3) : 1);
+
+    // FIX 7: When head yaw exceeds ~35 degrees (0.61 rad), fade out earring on the far side
+    const isEarring = kind === 'EARRINGS' || this.currentUrl.includes('earring');
+    if (isEarring && pose.secondaryPosition && pose.yaw !== undefined) {
+      const FAR_YAW_THRESHOLD = 0.61; // ~35 deg
+      const FAR_YAW_MAX = 0.85;       // ~48.7 deg
+      const absYaw = Math.abs(pose.yaw);
+      if (absYaw > FAR_YAW_THRESHOLD) {
+        const fade = Math.max(0, 1 - (absYaw - FAR_YAW_THRESHOLD) / (FAR_YAW_MAX - FAR_YAW_THRESHOLD));
+        const otherPos = secondary ? pose.position : pose.secondaryPosition;
+        // In image coordinates, yaw > 0 is facing right -> left side (smaller X) is occluded
+        // yaw < 0 is facing left -> right side (larger X) is occluded
+        const isFarSide = pose.yaw > 0 ? pos.x < otherPos.x : pos.x > otherPos.x;
+        if (isFarSide) {
+          alpha *= fade;
+        }
+      }
+    }
+
+    if (alpha < 0.01) return;
 
     this.ctx.save();
-    this.ctx.globalAlpha = this.currentOpacity * (pose.confidence > 0 ? Math.min(1, pose.confidence + 0.3) : 1);
+    this.ctx.globalAlpha = alpha;
     this.ctx.translate(pos.x, pos.y);
     this.ctx.rotate(pose.rotationZ);
     if (secondary && this.mirrorSecondary) {
       this.ctx.scale(-1, 1);
     }
     // Apply subtle drop shadow for depth.
-    this.ctx.shadowColor   = 'rgba(0,0,0,0.25)';
+    this.ctx.shadowColor   = 'rgba(0,0,0,0.30)';
     this.ctx.shadowBlur    = 10;
     this.ctx.shadowOffsetY = 4;
     this.ctx.shadowOffsetX = 1;
-    this.ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    this.ctx.drawImage(img, originX, originY, w, h);
     this.ctx.restore();
     this.ctx.globalAlpha = 1;
   }
 
   clear(): void {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  clearJewellery(): void {
+    this.image = null;
+    this.currentUrl = '';
+    this.currentOpacity = 1;
+    this.targetOpacity = 1;
+    this.clear();
+  }
+
+  hasActiveOverlay(): boolean {
+    return this.image !== null;
+  }
+
+  getActiveUrl(): string {
+    return this.currentUrl;
   }
 
   drawLandmarks(
@@ -174,6 +249,157 @@ export class Canvas2dRenderer {
       }
     }
     this.ctx.restore();
+  }
+
+  /**
+   * Diagnostic ?debug=1 overlay:
+   * Renders detected landmarks, measured widths (shoulders, face),
+   * anchor crosshair, and live performance metrics HUD.
+   */
+  drawDebugOverlay(options: {
+    landmarks?: {
+      kind: string;
+      named: Record<string, { x: number; y: number }>;
+      scaleRef?: number;
+      shouldersVisible?: boolean;
+    } | null;
+    pose?: PoseFit | null;
+    fps?: number;
+    latencyMs?: number;
+    status?: string;
+  }): void {
+    const { landmarks, pose, fps = 0, latencyMs = 0, status = 'UNKNOWN' } = options;
+    const ctx = this.ctx;
+    ctx.save();
+
+    // 1. Draw Landmarks with labels
+    if (landmarks?.named) {
+      const named = landmarks.named;
+      const keys = Object.keys(named).filter((k) => !k.endsWith('_ROT') && !k.endsWith('_WIDTH'));
+      this.drawLandmarks(named, keys, 'debug');
+
+      // 2. Draw Measured Widths
+      // Shoulder span
+      const ls = named['LEFT_SHOULDER'];
+      const rs = named['RIGHT_SHOULDER'];
+      if (ls && rs) {
+        ctx.beginPath();
+        ctx.setLineDash([4, 4]);
+        ctx.moveTo(ls.x, ls.y);
+        ctx.lineTo(rs.x, rs.y);
+        ctx.strokeStyle = '#06b6d4';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const midX = (ls.x + rs.x) / 2;
+        const midY = (ls.y + rs.y) / 2;
+        const shoulderSpan = Math.hypot(rs.x - ls.x, rs.y - ls.y);
+
+        ctx.fillStyle = 'rgba(6, 182, 212, 0.85)';
+        ctx.fillRect(midX - 70, midY - 18, 140, 18);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`Shoulders: ${shoulderSpan.toFixed(0)}px`, midX, midY - 5);
+      }
+
+      // Face width (ear-to-ear or pupils)
+      const le = named['LEFT_EAR'] ?? named['LEFT_EAR_LOBE'] ?? named['LEFT_EYE'];
+      const re = named['RIGHT_EAR'] ?? named['RIGHT_EAR_LOBE'] ?? named['RIGHT_EYE'];
+      if (le && re) {
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.moveTo(le.x, le.y);
+        ctx.lineTo(re.x, re.y);
+        ctx.strokeStyle = '#22c55e';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const faceMidX = (le.x + re.x) / 2;
+        const faceMidY = (le.y + re.y) / 2;
+        const faceSpan = Math.hypot(re.x - le.x, re.y - le.y);
+
+        ctx.fillStyle = 'rgba(34, 197, 94, 0.85)';
+        ctx.fillRect(faceMidX - 60, faceMidY - 18, 120, 18);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`Face: ${faceSpan.toFixed(0)}px`, faceMidX, faceMidY - 5);
+      }
+    }
+
+    // 3. Draw Anchor Point Crosshair & Target Reticle
+    if (pose?.position) {
+      const { x, y } = pose.position;
+
+      // Outer pulsing ring
+      ctx.beginPath();
+      ctx.arc(x, y, 14, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      // Inner reticle circle
+      ctx.beginPath();
+      ctx.arc(x, y, 8, 0, Math.PI * 2);
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Center crosshair lines
+      ctx.beginPath();
+      ctx.moveTo(x - 14, y);
+      ctx.lineTo(x + 14, y);
+      ctx.moveTo(x, y - 14);
+      ctx.lineTo(x, y + 14);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Anchor coordinate badge
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.9)';
+      ctx.fillRect(x + 16, y - 10, 115, 18);
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`ANCHOR (${x.toFixed(0)}, ${y.toFixed(0)})`, x + 20, y + 3);
+    }
+
+    // 4. Live Diagnostic Performance HUD (top-left)
+    const hudX = 14;
+    const hudY = 14;
+    const hudW = 168;
+    const hudH = 108;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(hudX, hudY, hudW, hudH, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('AR ENGINE DEBUG (?debug=1)', hudX + 8, hudY + 16);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '9px monospace';
+    ctx.fillText(`FPS:       ${fps}`, hudX + 8, hudY + 32);
+    ctx.fillText(`LATENCY:   ${latencyMs.toFixed(1)} ms`, hudX + 8, hudY + 46);
+    ctx.fillText(`STATUS:    ${status}`, hudX + 8, hudY + 60);
+    ctx.fillText(`SCALE:     ${(pose?.scale ?? 1).toFixed(2)}`, hudX + 8, hudY + 74);
+    ctx.fillText(`ROTATION:  ${(((pose?.rotationZ ?? 0) * 180) / Math.PI).toFixed(1)}°`, hudX + 8, hudY + 88);
+    ctx.fillText(
+      `SHOULDERS: ${landmarks?.shouldersVisible !== false ? 'VISIBLE' : 'OUT_OF_FRAME'}`,
+      hudX + 8,
+      hudY + 102,
+    );
+
+    ctx.restore();
   }
 
   // ─── Capture / Export ──────────────────────────────────────────────────────

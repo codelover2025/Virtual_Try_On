@@ -9,6 +9,9 @@ export interface CameraHud {
   status: string;
   fps: number;
   error?: string;
+  promptMessage?: string;
+  shouldersVisible?: boolean;
+  faceCentered?: boolean;
 }
 
 export interface CameraComponentProps {
@@ -44,14 +47,35 @@ export function CameraComponent({
   onMirrorToggle,
   onCapture,
   captureDisabled = false,
-  aspectRatioClass = 'aspect-[3/4]',
+  aspectRatioClass = 'aspect-[4/5]',
   className,
   promptText = 'Position yourself in front of the camera for real-time jewellery fitting.',
 }: CameraComponentProps) {
   const [guideOn, setGuideOn] = React.useState(true);
+  const [guideDismissed, setGuideDismissed] = React.useState(false);
   const [brightMode, setBrightMode] = React.useState(false);
   const [countdown, setCountdown] = React.useState<number | null>(null);
   const [flashing, setFlashing] = React.useState(false);
+
+  // Auto-dismiss "ALIGN FACE" guide when face is detected, centered, and stable for ~300 ms
+  React.useEffect(() => {
+    if (!running) {
+      setGuideDismissed(false);
+      return;
+    }
+
+    const isAligned = hud.status === 'TRACKING' && hud.faceCentered !== false;
+
+    if (isAligned) {
+      const timer = setTimeout(() => {
+        setGuideDismissed(true);
+      }, 300);
+      return () => clearTimeout(timer);
+    } else {
+      // Re-display guide immediately if tracking is lost or face drifts off-center
+      setGuideDismissed(false);
+    }
+  }, [running, hud.status, hud.faceCentered]);
 
   const triggerShutter = React.useCallback(() => {
     if (captureDisabled || !running || countdown !== null) return;
@@ -79,35 +103,38 @@ export function CameraComponent({
         className,
       )}
     >
-      {/* Underlying WebCam Video Element */}
-      <video
-        ref={videoRef}
-        playsInline
-        muted
+      {/* Shared Video + AR Canvas Viewport (Single source of truth with bottom safe zone) */}
+      <div
+        data-testid="camera-mirror-wrapper"
         className={cn(
-          'absolute inset-0 h-full w-full object-cover transition-transform',
+          'absolute inset-x-0 top-0 transition-transform duration-200',
+          running ? 'bottom-24' : 'bottom-0',
           mirrorOn ? '-scale-x-100' : 'scale-x-100',
-          running ? 'opacity-100' : 'opacity-0',
         )}
-      />
+      >
+        {/* Underlying WebCam Video Element */}
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          className={cn(
+            'absolute inset-0 h-full w-full object-cover object-center',
+            running ? 'opacity-100' : 'opacity-0',
+          )}
+        />
 
-      {/* 2D Canvas for landmarks/contours */}
-      <canvas
-        ref={overlayRef}
-        className={cn(
-          'absolute inset-0 h-full w-full pointer-events-none transition-transform',
-          mirrorOn ? '-scale-x-100' : 'scale-x-100',
-        )}
-      />
+        {/* 2D Canvas for landmarks/contours (Identical object-fit & crop) */}
+        <canvas
+          ref={overlayRef}
+          className="absolute inset-0 h-full w-full object-cover object-center pointer-events-none"
+        />
 
-      {/* Three.js 3D WebGL Canvas for 3D jewellery rendering */}
-      <canvas
-        ref={threeRef}
-        className={cn(
-          'absolute inset-0 h-full w-full pointer-events-none transition-transform',
-          mirrorOn ? '-scale-x-100' : 'scale-x-100',
-        )}
-      />
+        {/* Three.js 3D WebGL Canvas for 3D jewellery rendering (Identical object-fit & crop) */}
+        <canvas
+          ref={threeRef}
+          className="absolute inset-0 h-full w-full object-cover object-center pointer-events-none"
+        />
+      </div>
 
       {/* Shutter Flash Animation */}
       {flashing ? (
@@ -123,9 +150,15 @@ export function CameraComponent({
         </div>
       ) : null}
 
-      {/* Subtle AR Alignment Guide Overlay */}
+      {/* Subtle AR Alignment Guide Overlay (Auto-dismisses when face is stable & centered) */}
       {running && guideOn ? (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-8">
+        <div
+          data-testid="face-alignment-guide"
+          className={cn(
+            'pointer-events-none absolute inset-x-0 top-0 bottom-24 flex items-center justify-center p-8 transition-opacity duration-300',
+            guideDismissed ? 'opacity-0' : 'opacity-100',
+          )}
+        >
           <div className="relative h-[65%] w-[60%] rounded-[45%] border border-dashed border-primary/40 opacity-70 animate-pulse">
             <div className="absolute top-[28%] left-[20%] right-[20%] border-t border-dotted border-primary/30" />
             <div className="absolute top-[50%] left-[30%] right-[30%] border-t border-dotted border-primary/30" />
@@ -133,6 +166,13 @@ export function CameraComponent({
               Align Face
             </div>
           </div>
+        </div>
+      ) : null}
+      {/* Dynamic AR Guidance / Warning Banner */}
+      {running && hud.promptMessage ? (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-full border border-amber-400/50 bg-black/85 px-4 py-1.5 text-xs font-medium text-amber-200 shadow-xl backdrop-blur-md animate-in fade-in">
+          <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+          <span>{hud.promptMessage}</span>
         </div>
       ) : null}
 
@@ -215,6 +255,7 @@ export function CameraComponent({
           </div>
           <Button
             size="lg"
+            data-testid="start-camera-btn"
             onClick={onStart}
             disabled={starting}
             className="rounded-full px-8 py-6 font-medium shadow-xl shadow-primary/20 hover:scale-105 transition-transform"
@@ -226,15 +267,15 @@ export function CameraComponent({
         </div>
       ) : null}
 
-      {/* In-view Bottom Shutter Bar */}
+      {/* Dedicated Bottom Safe Zone Shutter Bar (Never covers jewellery or neck) */}
       {running ? (
-        <div className="absolute bottom-4 left-0 right-0 z-20 flex items-center justify-center gap-4 px-6">
+        <div className="absolute bottom-0 left-0 right-0 h-24 z-20 flex items-center justify-center gap-5 px-6 bg-gradient-to-t from-black via-black/90 to-transparent border-t border-white/10 backdrop-blur-sm">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={onStop}
-            className="rounded-full bg-black/60 text-white hover:bg-black/80 border-white/20 text-xs backdrop-blur-md"
+            className="rounded-full bg-black/70 text-white hover:bg-black/90 border-white/20 text-xs backdrop-blur-md shadow-md"
           >
             Close Camera
           </Button>
@@ -242,10 +283,11 @@ export function CameraComponent({
           {/* Shutter Button */}
           <button
             type="button"
+            data-testid="shutter-btn"
             onClick={triggerShutter}
             disabled={captureDisabled || countdown !== null}
             title="Take Studio Snapshot"
-            className="group relative flex h-16 w-16 items-center justify-center rounded-full border-4 border-white/80 bg-primary shadow-xl hover:scale-105 active:scale-95 transition-all duration-150 disabled:opacity-50"
+            className="group relative flex h-16 w-16 items-center justify-center rounded-full border-4 border-white/90 bg-primary shadow-2xl hover:scale-105 active:scale-95 transition-all duration-150 disabled:opacity-50"
           >
             <div className="h-11 w-11 rounded-full bg-white transition group-hover:bg-primary-foreground" />
             <Camera className="absolute h-5 w-5 text-primary group-hover:text-white transition" />
@@ -257,7 +299,7 @@ export function CameraComponent({
             size="sm"
             onClick={triggerShutter}
             disabled={captureDisabled || countdown !== null}
-            className="rounded-full bg-black/60 text-white hover:bg-black/80 border-white/20 text-xs backdrop-blur-md"
+            className="rounded-full bg-black/70 text-white hover:bg-black/90 border-white/20 text-xs backdrop-blur-md shadow-md"
           >
             Capture
           </Button>
@@ -266,7 +308,7 @@ export function CameraComponent({
 
       {/* Error banner if camera fails */}
       {hud.error ? (
-        <div className="absolute bottom-20 left-4 right-4 z-30 rounded-xl border border-destructive/50 bg-destructive/90 p-3 text-center text-xs text-white backdrop-blur-md flex items-center justify-center gap-2">
+        <div className="absolute bottom-28 left-4 right-4 z-30 rounded-xl border border-destructive/50 bg-destructive/90 p-3 text-center text-xs text-white backdrop-blur-md flex items-center justify-center gap-2">
           <AlertCircle className="h-4 w-4 shrink-0" />
           <span>{hud.error}</span>
         </div>

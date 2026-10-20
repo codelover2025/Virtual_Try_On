@@ -6,11 +6,12 @@ export type Vec3 = { x: number; y: number; z: number };
 export type LandmarkPoint = Vec2 & { z?: number; name?: string };
 
 export type LandmarkResult = {
-  kind:       'face' | 'hand';
+  kind:       'face' | 'hand' | 'pose';
   confidence: number;
   points:     LandmarkPoint[];
   named:      Record<string, LandmarkPoint>;
   scaleRef:   number;
+  shouldersVisible?: boolean;
 };
 
 export type AnchorProfile = {
@@ -32,6 +33,10 @@ export type PoseFit = {
   visible:           boolean;
   /** Depth hint: positive = closer to camera, negative = further. */
   depthHint?:        number;
+  /** Head 3D Yaw in radians (positive = looking right, negative = looking left). */
+  yaw?:              number;
+  /** Head 3D Pitch in radians. */
+  pitch?:            number;
 };
 
 export type TrackingStatus = 'INITIALIZING' | 'TRACKING' | 'DEGRADED' | 'LOST';
@@ -70,6 +75,9 @@ export type ArEngineEvents = {
   error?:     string;
   /** Fired when the jewellery asset finishes swapping in. */
   assetReady?: boolean;
+  promptMessage?: string;
+  shouldersVisible?: boolean;
+  faceCentered?: boolean;
 };
 
 export type CaptureOptions = {

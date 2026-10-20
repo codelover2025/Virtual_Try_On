@@ -4,8 +4,11 @@ export { CameraEngine } from './camera/camera-engine.js';
 export type { CameraEngineOptions, CameraCapabilities, CameraHealthStatus } from './camera/camera-engine.js';
 export { FaceDetector } from './detectors/face-detector.js';
 export { HandDetector, FINGER_JOINTS } from './detectors/hand-detector.js';
+export { PoseDetector } from './detectors/pose-detector.js';
 export { LandmarkProcessor } from './landmarks/landmark-processor.js';
 export type { ProcessorOptions, ProcessorMetrics } from './landmarks/landmark-processor.js';
+export { BodyModelEstimator } from './landmarks/body-model-estimator.js';
+export type { BodyModelMeasurements } from './landmarks/body-model-estimator.js';
 export { AnchorRegistry } from './anchors/anchor-registry.js';
 export type { AnchorRegistration, DetectorKind } from './anchors/anchor-registry.js';
 export { PoseFitter } from './fitting/pose-fitter.js';
@@ -21,4 +24,15 @@ export { ThreeRenderer } from './renderers/three-renderer.js';
 export { CaptureCompositor } from './capture/capture-compositor.js';
 export { loadOpenCv } from './opencv/opencv-loader.js';
 export { initTfBackend } from './models/tf-backend.js';
+export {
+  transformToScreen,
+  transformPoseToScreen,
+  resolvePhysicalEarMapping,
+} from './utils/coordinate-transform.js';
+export {
+  isFaceCentered,
+  evaluateFaceGuideStatus,
+  shouldHideFaceGuide,
+} from './tracking/face-guide-state.js';
+export type { FaceGuideStatus, FrameDimensions } from './tracking/face-guide-state.js';
 export type * from './types.js';
