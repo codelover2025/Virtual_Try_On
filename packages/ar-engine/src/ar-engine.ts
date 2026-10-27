@@ -87,9 +87,11 @@ export class ArEngine {
 
   private raf          = 0;
   private running      = false;
+  private detecting    = false;
   private frameIndex   = 0;
   private mirrored     = true;
   private debugLandmarks = false;
+  private lastRenderTier: QualityTier | null = null;
 
   private lastPose:      PoseFit       | null = null;
   private lastLandmarks: LandmarkResult | null = null;
@@ -169,9 +171,10 @@ export class ArEngine {
     // Fitter
     const profile = AnchorRegistry.mergeProfile(config.jewelleryKind, config.anchorProfile);
     this.fitter = new PoseFitter(profile, {
-      scale:       config.defaultScale    ?? 1,
-      rotationZ:   ((config.defaultRotationZ ?? 0) * Math.PI) / 180,
-      fingerIndex: config.fingerIndex,
+      scale:         config.defaultScale    ?? 1,
+      rotationZ:     ((config.defaultRotationZ ?? 0) * Math.PI) / 180,
+      fingerIndex:   config.fingerIndex,
+      jewelleryKind: config.jewelleryKind,
     });
     this.fitter.setFineTune(this.fineTuneScale, this.fineTuneOffsetY);
 
@@ -203,15 +206,17 @@ export class ArEngine {
     // Update fitter for new kind / anchor.
     const profile = AnchorRegistry.mergeProfile(config.jewelleryKind, config.anchorProfile);
     this.fitter = new PoseFitter(profile, {
-      scale:       config.defaultScale    ?? 1,
-      rotationZ:   ((config.defaultRotationZ ?? 0) * Math.PI) / 180,
-      fingerIndex: config.fingerIndex,
+      scale:         config.defaultScale    ?? 1,
+      rotationZ:     ((config.defaultRotationZ ?? 0) * Math.PI) / 180,
+      fingerIndex:   config.fingerIndex,
+      jewelleryKind: config.jewelleryKind,
     });
     this.fitter.setFineTune(this.fineTuneScale, this.fineTuneOffsetY);
 
     // If kind changed, swap detector (lazy load only what is needed).
     const registration = AnchorRegistry.get(config.jewelleryKind);
     const needsNewDetector = !this.detector || this.detector.name !== registration.detector;
+    const kindChanged = this.config?.jewelleryKind !== config.jewelleryKind;
 
     if (needsNewDetector) {
       this.detector?.dispose();
@@ -221,11 +226,17 @@ export class ArEngine {
       this.tracker.reset();
     }
 
-    // Load the new asset.
+    if (kindChanged) {
+      this.lastPose = null;
+      this.lastLandmarks = null;
+      this.bodyModel.reset();
+    }
+
+    // Load the new asset without restarting the camera or render loop.
     await this._loadAsset(config);
 
-    // Replace config reference completely so old properties do not leak
-    this.config = { ...config };
+    // Keep session flags (mirror, fps, debug) while replacing jewellery fields.
+    this.config = { ...(this.config ?? {}), ...config };
 
     this.emit({ status: this.status, fps: this.fpsMeter.getFps(), assetReady: true });
   }
@@ -236,7 +247,8 @@ export class ArEngine {
     await Promise.allSettled(
       urls.map((url) => {
         if (url.endsWith('.glb') || url.endsWith('.gltf')) {
-          return this.threeRenderer?.loadModel(url, false) ?? Promise.resolve();
+          // Warm the GLB cache only — never swap the live mesh.
+          return this.threeRenderer?.warmCache(url) ?? Promise.resolve();
         }
         return this.canvasRenderer?.preload(url) ?? Promise.resolve();
       }),
@@ -365,7 +377,10 @@ export class ArEngine {
 
   stop(): void {
     this.running = false;
+    this.detecting = false;
     if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.lastRenderTier = null;
     if (this.recoverTimer) clearTimeout(this.recoverTimer);
     this.detector?.dispose();
     this.threeRenderer?.dispose();
@@ -385,11 +400,17 @@ export class ArEngine {
     this.recoverAttempts = 0;
     this.assetLoaded     = false;
     this.assetLoadingPromise = null;
+    this.bodyModel.reset();
+    this.fineTuneScale = 1.0;
+    this.fineTuneOffsetY = 0;
+    this.config = null;
   }
 
   // ─── Frame loop ────────────────────────────────────────────────────────────
+  // Render stays on rAF. Detection runs in the background so a slow MediaPipe
+  // call cannot stall jewellery updates into stop-motion.
 
-  private loop = async (): Promise<void> => {
+  private loop = (): void => {
     if (!this.running || !this.host || !this.detector || !this.fitter || !this.canvasRenderer) return;
 
     const t0 = performance.now();
@@ -398,7 +419,6 @@ export class ArEngine {
       const video = this.host.video;
 
       if (video.readyState >= 2) {
-        // Sync canvas dimensions if video size changed (e.g. after flip).
         if (
           this.host.overlayCanvas.width !== video.videoWidth &&
           video.videoWidth > 0
@@ -406,17 +426,14 @@ export class ArEngine {
           this.syncCanvasSizes();
         }
 
-        // Clear overlay for transparent 2D jewellery/landmarks rendering;
-        // video background is rendered by host video element in UI wrapper.
         this.canvasRenderer.clear();
 
-        // Adapt quality tier to Three.js renderer
         const tier = this.adaptive.getQualityTier();
-        if (this.threeRenderer) {
+        if (this.threeRenderer && tier !== this.lastRenderTier) {
           this.threeRenderer.setRenderQuality(tier);
+          this.lastRenderTier = tier;
         }
 
-        // Skip render if adaptive controller says we're under budget.
         const skipRender = this.adaptive.shouldSkipRender();
 
         if (this.frameIndex % 8 === 0) {
@@ -433,43 +450,36 @@ export class ArEngine {
           }
         }
 
-        if (this.adaptive.shouldDetect(this.frameIndex)) {
-          try {
-            const raw = await this.detector.estimate(video);
-            const { result } = this.processor.process(raw);
-            this.lastLandmarks = result;
-          } catch {
-            // Detection error: keep previous landmarks.
-          }
+        if (this.adaptive.shouldDetect(this.frameIndex) && !this.detecting) {
+          void this.runDetection();
         }
 
-        const rawPose = this.fitter.fit(this.lastLandmarks);
-        // Engine coordinates stay in raw unmirrored camera pixel space.
-        // Live preview mirroring is handled cleanly by CSS transform on the shared UI viewport.
-        const pose    = rawPose;
+        const pose = this.fitter.fit(this.lastLandmarks);
         this.lastPose = pose;
         this.status   = this.tracker.update(pose);
 
-        // Reset recovery counter on successful tracking
         if (this.status === 'TRACKING') {
           this.recoverAttempts = Math.max(0, this.recoverAttempts - 1);
         }
 
         if (!skipRender && this.status !== 'LOST' && pose.visible) {
           const is3d = this.is3DAsset(this.config);
+          const kind = this.config?.jewelleryKind;
           if (is3d && this.threeRenderer) {
-            this.threeRenderer.render(pose);
+            this.threeRenderer.render(pose, kind);
           } else if (!is3d && this.canvasRenderer) {
-            this.canvasRenderer.drawJewellery(pose, false, this.config?.jewelleryKind);
+            this.canvasRenderer.drawJewellery(pose, false, kind);
             if (pose.secondaryPosition && this.config?.mirrorForOppositeEar !== false) {
-              this.canvasRenderer.drawJewellery(pose, true, this.config?.jewelleryKind);
+              this.canvasRenderer.drawJewellery(pose, true, kind);
             }
           }
         } else if (this.is3DAsset(this.config) && this.threeRenderer) {
-          this.threeRenderer.render({ ...pose, visible: pose.visible && this.status !== 'LOST' });
+          this.threeRenderer.render(
+            { ...pose, visible: pose.visible && this.status !== 'LOST' },
+            this.config?.jewelleryKind,
+          );
         }
 
-        // Draw debug overlay (?debug=1): landmarks, anchor point, measured widths, and live FPS HUD
         if (this.debugLandmarks && this.canvasRenderer) {
           this.canvasRenderer.drawDebugOverlay({
             landmarks: this.lastLandmarks,
@@ -496,20 +506,21 @@ export class ArEngine {
     let promptMessage: string | undefined;
     let shouldersVisible: boolean | undefined;
 
-    // Hint 1: Low light warning
     if (this.lastLuma != null && this.lastLuma < 0.20 && this.status === 'TRACKING') {
       promptMessage = 'Please increase lighting';
     }
 
-    // Hint 2: Shoulder visibility for necklace fitting
     if (this.lastLandmarks?.kind === 'pose') {
       shouldersVisible = this.lastLandmarks.shouldersVisible !== false;
-      if (!shouldersVisible && this.config?.jewelleryKind === 'NECKLACE') {
+      const neckKind = this.config?.jewelleryKind;
+      if (
+        !shouldersVisible &&
+        (neckKind === 'NECKLACE' || neckKind === 'PENDANT' || neckKind === 'MANGALSUTRA')
+      ) {
         promptMessage = 'Move back so your shoulders are visible';
       }
     }
 
-    // Hint 3: Hand truncation warning for rings and bangles
     if (this.lastLandmarks?.kind === 'hand') {
       const wrist = this.lastLandmarks.named['WRIST'];
       const videoW = this.host?.video.videoWidth || 640;
@@ -525,7 +536,6 @@ export class ArEngine {
       }
     }
 
-    // Universal Fit: update biometric body proportions every frame
     if (this.lastLandmarks) {
       this.bodyModel.estimate(this.lastLandmarks);
     }
@@ -555,7 +565,24 @@ export class ArEngine {
       faceCentered,
     });
     this.frameIndex += 1;
-    this.raf = requestAnimationFrame(() => void this.loop());
+    if (this.running) {
+      this.raf = requestAnimationFrame(this.loop);
+    }
+  };
+
+  private async runDetection(): Promise<void> {
+    if (this.detecting || !this.detector || !this.host) return;
+    this.detecting = true;
+    try {
+      const raw = await this.detector.estimate(this.host.video);
+      if (!this.running) return;
+      const { result } = this.processor.process(raw);
+      this.lastLandmarks = result;
+    } catch {
+      // Keep previous landmarks.
+    } finally {
+      this.detecting = false;
+    }
   };
 
   // ─── Private helpers ───────────────────────────────────────────────────────

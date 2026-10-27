@@ -25,6 +25,7 @@ export class FaceDetector implements ModelAdapter {
   private frameCount = 0;
   private lastFrameWidth = 0;
   private lastFrameHeight = 0;
+  private lastVisionTs = 0;
 
   // Rolling history for temporal smoothing
   private prevNamed: Record<string, { x: number; y: number }> = {};
@@ -77,7 +78,7 @@ export class FaceDetector implements ModelAdapter {
     // ── Try MediaPipe FaceLandmarker (478 Landmarks) first ─────────────────
     if (this.faceLandmarker && width > 0 && height > 0) {
       try {
-        const timestamp = performance.now();
+        const timestamp = this.nextVisionTs();
         const res = this.faceLandmarker.detectForVideo(input, timestamp);
         if (res?.faceLandmarks && res.faceLandmarks.length > 0) {
           // Multiple faces: track only the largest face
@@ -123,10 +124,16 @@ export class FaceDetector implements ModelAdapter {
       }
     }
     this.faceLandmarker = null;
+    try {
+      (this.blazeModel as { dispose?: () => void } | null)?.dispose?.();
+    } catch {
+      // ignore
+    }
     this.blazeModel = null;
     this.prevNamed = {};
     this.prevScaleRef = 120;
     this.frameCount = 0;
+    this.lastVisionTs = 0;
   }
 
   // ─── MediaPipe 478 Mesh Processing ─────────────────────────────────────────
@@ -156,9 +163,12 @@ export class FaceDetector implements ModelAdapter {
     };
 
     // ── Key MediaPipe Facial Indices ──────────────────────────────────────
-    // Earlobe & Jawline
-    addIdx('LEFT_EAR_LOBE', 234);  // Left earlobe / tragus
-    addIdx('RIGHT_EAR_LOBE', 454); // Right earlobe / tragus
+    // 234/454 sit on the cheek/tragus. Blend with lower-jaw points so drop
+    // earrings hang from the lobe instead of the side of the face.
+    addIdx('LEFT_EAR_TRAGUS', 234);
+    addIdx('RIGHT_EAR_TRAGUS', 454);
+    addIdx('LEFT_JAW_NEAR_EAR', 132);
+    addIdx('RIGHT_JAW_NEAR_EAR', 361);
     addIdx('JAWLINE_LEFT', 172);
     addIdx('JAWLINE_RIGHT', 397);
 
@@ -188,6 +198,39 @@ export class FaceDetector implements ModelAdapter {
     const rightEye = named['RIGHT_EYE'];
     const noseTip = named['NOSE_TIP'];
     const chin = named['CHIN'];
+
+    const leftTragus = named['LEFT_EAR_TRAGUS'];
+    const rightTragus = named['RIGHT_EAR_TRAGUS'];
+    const leftJaw = named['LEFT_JAW_NEAR_EAR'];
+    const rightJaw = named['RIGHT_JAW_NEAR_EAR'];
+    const forehead = named['FOREHEAD_CENTER'];
+    const faceHeight = forehead && chin
+      ? Math.max(40, Math.hypot(chin.x - forehead.x, chin.y - forehead.y))
+      : height * 0.28;
+    const lobeDrop = faceHeight * 0.055;
+
+    if (leftTragus) {
+      const lx = leftJaw ? leftTragus.x * 0.35 + leftJaw.x * 0.65 : leftTragus.x;
+      const ly = leftJaw ? leftTragus.y * 0.30 + leftJaw.y * 0.70 : leftTragus.y;
+      named['LEFT_EAR_LOBE'] = {
+        x: lx,
+        y: ly + lobeDrop,
+        z: leftTragus.z,
+        name: 'LEFT_EAR_LOBE',
+      };
+      points.push(named['LEFT_EAR_LOBE']);
+    }
+    if (rightTragus) {
+      const rx = rightJaw ? rightTragus.x * 0.35 + rightJaw.x * 0.65 : rightTragus.x;
+      const ry = rightJaw ? rightTragus.y * 0.30 + rightJaw.y * 0.70 : rightTragus.y;
+      named['RIGHT_EAR_LOBE'] = {
+        x: rx,
+        y: ry + lobeDrop,
+        z: rightTragus.z,
+        name: 'RIGHT_EAR_LOBE',
+      };
+      points.push(named['RIGHT_EAR_LOBE']);
+    }
 
     // Head orientation angles
     let roll = 0;
@@ -230,6 +273,16 @@ export class FaceDetector implements ModelAdapter {
       scaleRef = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y) * 1.8;
     } else if (named['LEFT_EAR_LOBE'] && named['RIGHT_EAR_LOBE']) {
       scaleRef = Math.hypot(named['RIGHT_EAR_LOBE'].x - named['LEFT_EAR_LOBE'].x, named['RIGHT_EAR_LOBE'].y - named['LEFT_EAR_LOBE'].y);
+    }
+    if (named['LEFT_EAR_LOBE'] && named['RIGHT_EAR_LOBE']) {
+      named['FACE_WIDTH'] = {
+        x: Math.hypot(
+          named['RIGHT_EAR_LOBE'].x - named['LEFT_EAR_LOBE'].x,
+          named['RIGHT_EAR_LOBE'].y - named['LEFT_EAR_LOBE'].y,
+        ),
+        y: 0,
+        name: 'FACE_WIDTH',
+      };
     }
 
     // Nose wing scale reference
@@ -307,8 +360,8 @@ export class FaceDetector implements ModelAdapter {
       addSafe('LEFT_EYE', landmarks[1]);
       addSafe('NOSE_TIP', landmarks[2]);
       addSafe('MOUTH', landmarks[3]);
-      addSafe('RIGHT_EAR_LOBE', landmarks[4]);
-      addSafe('LEFT_EAR_LOBE', landmarks[5]);
+      addSafe('RIGHT_EAR_TRAGUS', landmarks[4]);
+      addSafe('LEFT_EAR_TRAGUS', landmarks[5]);
     }
 
     const yaw = this._estimateHeadYaw(named, faceWidth);
@@ -351,6 +404,24 @@ export class FaceDetector implements ModelAdapter {
       points.push(named['CHIN']);
     }
 
+    const blazeLobeDrop = faceHeight * 0.06;
+    if (named['LEFT_EAR_TRAGUS']) {
+      named['LEFT_EAR_LOBE'] = {
+        ...named['LEFT_EAR_TRAGUS'],
+        y: named['LEFT_EAR_TRAGUS'].y + blazeLobeDrop,
+        name: 'LEFT_EAR_LOBE',
+      };
+      points.push(named['LEFT_EAR_LOBE']);
+    }
+    if (named['RIGHT_EAR_TRAGUS']) {
+      named['RIGHT_EAR_LOBE'] = {
+        ...named['RIGHT_EAR_TRAGUS'],
+        y: named['RIGHT_EAR_TRAGUS'].y + blazeLobeDrop,
+        name: 'RIGHT_EAR_LOBE',
+      };
+      points.push(named['RIGHT_EAR_LOBE']);
+    }
+
     // Scale reference: IPD
     let scaleRef = faceWidth;
     if (named['LEFT_EYE'] && named['RIGHT_EYE']) {
@@ -359,6 +430,16 @@ export class FaceDetector implements ModelAdapter {
         named['RIGHT_EYE'].y - named['LEFT_EYE'].y,
       );
       scaleRef = ipd * 1.85;
+    }
+    if (named['LEFT_EAR_LOBE'] && named['RIGHT_EAR_LOBE']) {
+      named['FACE_WIDTH'] = {
+        x: Math.hypot(
+          named['RIGHT_EAR_LOBE'].x - named['LEFT_EAR_LOBE'].x,
+          named['RIGHT_EAR_LOBE'].y - named['LEFT_EAR_LOBE'].y,
+        ),
+        y: 0,
+        name: 'FACE_WIDTH',
+      };
     }
 
     this._applyTemporalSmoothing(named);
@@ -374,10 +455,16 @@ export class FaceDetector implements ModelAdapter {
 
   // ─── Temporal Smoothing ───────────────────────────────────────────────────
 
+  private nextVisionTs(): number {
+    const ts = Math.max(this.lastVisionTs + 1, performance.now());
+    this.lastVisionTs = ts;
+    return ts;
+  }
+
   private _applyTemporalSmoothing(named: Record<string, LandmarkPoint>): void {
-    const smoothFactor = this.frameCount < 4 ? 0.8 : 0.6;
+    const smoothFactor = this.frameCount < 4 ? 0.88 : 0.78;
     for (const [key, pt] of Object.entries(named)) {
-      if (key === 'HEAD_ROLL' || key === 'HEAD_YAW' || key === 'NOSE_WING_WIDTH') continue;
+      if (key === 'HEAD_ROLL' || key === 'HEAD_YAW' || key.endsWith('_WIDTH')) continue;
       const prev = this.prevNamed[key];
       if (prev) {
         named[key] = {
@@ -396,8 +483,10 @@ export class FaceDetector implements ModelAdapter {
   ): number {
     const nose = named['NOSE_TIP'];
     if (!nose || faceWidth < 1) return 0;
-    const centerX = named['LEFT_EAR_LOBE']
-      ? (named['LEFT_EAR_LOBE'].x + (named['RIGHT_EAR_LOBE']?.x ?? nose.x)) / 2
+    const leftEar = named['LEFT_EAR_LOBE'] ?? named['LEFT_EAR_TRAGUS'];
+    const rightEar = named['RIGHT_EAR_LOBE'] ?? named['RIGHT_EAR_TRAGUS'];
+    const centerX = leftEar
+      ? (leftEar.x + (rightEar?.x ?? nose.x)) / 2
       : nose.x;
     return Math.max(-1, Math.min(1, (nose.x - centerX) / faceWidth));
   }

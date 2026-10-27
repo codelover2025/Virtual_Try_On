@@ -269,6 +269,9 @@ function isPoseMetadata(key: string): boolean {
     key === 'HANDEDNESS' ||
     key === 'PALM_NORMAL' ||
     key === 'BANGLE_ROT' ||
+    key === 'SHOULDER_ROT' ||
+    key === 'WRIST_DIR' ||
+    key.endsWith('_WIDTH') ||
     key.startsWith('FINGER_DIR_') ||
     key.startsWith('FINGER_CURL_') ||
     key.startsWith('RING_ROT_')

@@ -29,6 +29,10 @@ export type PoseFit = {
   secondaryPosition?: Vec2;
   scale:             number;
   rotationZ:         number;
+  /** Screen-space X tilt (pitch) applied to 3D jewellery. */
+  rotationX?:        number;
+  /** Screen-space Y tilt (yaw) applied to 3D jewellery. */
+  rotationY?:        number;
   confidence:        number;
   visible:           boolean;
   /** Depth hint: positive = closer to camera, negative = further. */

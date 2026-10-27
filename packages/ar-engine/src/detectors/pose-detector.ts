@@ -30,6 +30,7 @@ export class PoseDetector implements ModelAdapter {
   private prevScaleRef = 240;
   private frameCount = 0;
   private lastConfidence = 0.85;
+  private lastVisionTs = 0;
 
   async load(): Promise<void> {
     try {
@@ -61,7 +62,7 @@ export class PoseDetector implements ModelAdapter {
 
     if (this.poseLandmarker) {
       try {
-        const timestamp = performance.now();
+        const timestamp = this.nextVisionTs();
         const res = this.poseLandmarker.detectForVideo(input, timestamp);
         if (res?.landmarks && res.landmarks.length > 0 && res.landmarks[0].length >= 13) {
           landmarks33 = res.landmarks[0];
@@ -176,7 +177,7 @@ export class PoseDetector implements ModelAdapter {
     }
 
     // Temporal smoothing per landmark
-    const smoothFactor = this.frameCount < 3 ? 0.85 : 0.60;
+    const smoothFactor = this.frameCount < 3 ? 0.88 : 0.72;
     for (const [key, pt] of Object.entries(named)) {
       if (key === 'SHOULDER_ROT') continue;
       const prev = this.prevNamed[key];
@@ -212,5 +213,12 @@ export class PoseDetector implements ModelAdapter {
     this.prevNamed = {};
     this.prevScaleRef = 240;
     this.frameCount = 0;
+    this.lastVisionTs = 0;
+  }
+
+  private nextVisionTs(): number {
+    const ts = Math.max(this.lastVisionTs + 1, performance.now());
+    this.lastVisionTs = ts;
+    return ts;
   }
 }

@@ -1,0 +1,43 @@
+# Phase 3 — AR Engine & Realistic Jewellery Tracking
+
+**Owner:** Developer 1
+
+**Objective:** Fix the existing AR engine so jewellery looks realistic and tracks the user's face or hands in real time.
+
+## Strict Rules
+- Do not redesign the architecture or rewrite working code.
+- Inspect existing code before making changes.
+- Reuse existing tracking libraries, Three.js renderer, and available assets.
+- Do not add paid SDKs or unnecessary dependencies.
+- Do not create fake 3D assets or claim unverified results.
+- Modify only files required for AR engine improvements.
+- Coordinate shared interfaces with Developer 2 (Niharika).
+- Conserve coding-agent credits by inspecting only relevant files.
+
+## Tasks
+
+1. Verify face/hand detection and camera initialization.
+2. Identify why jewellery currently looks animated rather than realistic.
+3. Fix jewellery anchor positioning, scale, rotation, and alignment.
+4. Improve tracking stability and reduce jitter.
+5. Improve existing Three.js rendering, materials, lighting, and perspective where supported.
+6. Verify earrings, necklaces, rings, bangles, and nose rings.
+7. Ensure product switching works without unnecessary reinitialization.
+8. Fix camera cleanup, memory leaks, and rendering issues.
+9. Add or update focused tests where practical.
+10. Verify improvements using the existing implementation and available assets.
+
+## Workflow
+- Inspect only `packages/ar-engine` and directly relevant tracking, rendering, and asset documentation.
+- Check existing tests before modifying code.
+- Implement confirmed fixes; do not stop at the audit.
+- Work on branch `phase3/ar-engine`.
+- Avoid modifying frontend, backend, or shared interfaces without coordinating with Niharika.
+
+## Final Output
+1. AR issues found.
+2. Fixes implemented.
+3. Files modified.
+4. Tests and checks executed.
+5. Remaining limitations or required assets.
+6. AR Engine: PASS / FAIL / BLOCKED.
