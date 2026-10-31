@@ -20,7 +20,7 @@ register(JewelleryKind.EARRINGS, {
     primaryAnchor: 'LEFT_EAR_LOBE',
     secondaryAnchor: 'RIGHT_EAR_LOBE',
     scaleRef: 'FACE_WIDTH',
-    offset: { x: 0, y: 0.06, z: 0 },
+    offset: { x: 0, y: 0.02, z: 0 },
     minScale: 0.35,
     maxScale: 2.5,
   },
@@ -146,12 +146,39 @@ export const AnchorRegistry = {
     return found;
   },
   register,
-  mergeProfile(kind: string, override?: Partial<AnchorProfile>): AnchorProfile {
+  mergeProfile(kind: string, override?: Partial<AnchorProfile> & Record<string, unknown>): AnchorProfile {
     const base = this.get(kind).defaultProfile;
+    const cleaned = sanitizeAnchorOverride(override);
     return {
       ...base,
-      ...override,
-      offset: { ...base.offset, ...override?.offset },
+      ...cleaned,
+      offset: { ...base.offset, ...cleaned.offset },
     };
   },
 };
+
+function sanitizeAnchorOverride(
+  override?: Partial<AnchorProfile> & Record<string, unknown>,
+): Partial<AnchorProfile> {
+  if (!override) return {};
+  const out: Partial<AnchorProfile> = {};
+  const type = String(override.anchorType ?? '').toUpperCase();
+  const fingerIndex = Number(override.fingerIndex);
+
+  if (type === 'WRIST') out.primaryAnchor = 'BANGLE_ANCHOR';
+  else if (type === 'FINGER_BASE') {
+    out.primaryAnchor = `RING_SLOT_${Number.isFinite(fingerIndex) ? fingerIndex : 3}`;
+  } else if (type === 'NOSE_WING') out.primaryAnchor = 'LEFT_NOSE_WING';
+  else if (type === 'EAR_LOBE') {
+    out.primaryAnchor = 'LEFT_EAR_LOBE';
+    out.secondaryAnchor = 'RIGHT_EAR_LOBE';
+  } else if (type === 'NECK_BASE') out.primaryAnchor = 'NECK_BASE';
+
+  if (typeof override.primaryAnchor === 'string') out.primaryAnchor = override.primaryAnchor;
+  if (typeof override.secondaryAnchor === 'string') out.secondaryAnchor = override.secondaryAnchor;
+  if (typeof override.scaleRef === 'string') out.scaleRef = override.scaleRef;
+  if (override.offset && typeof override.offset === 'object') out.offset = override.offset;
+  if (typeof override.minScale === 'number') out.minScale = override.minScale;
+  if (typeof override.maxScale === 'number') out.maxScale = override.maxScale;
+  return out;
+}

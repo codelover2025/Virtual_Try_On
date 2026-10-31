@@ -45,6 +45,8 @@ export interface CameraComponentProps {
   aspectRatioClass?: string;
   className?: string;
   promptText?: string;
+  /** Changes the alignment overlay for face, hand, or necklace try-on. */
+  guideMode?: 'face' | 'hand' | 'pose';
 }
 
 export function CameraComponent({
@@ -66,6 +68,7 @@ export function CameraComponent({
   aspectRatioClass = 'aspect-[4/5]',
   className,
   promptText = 'Position yourself in front of the camera for real-time jewellery fitting.',
+  guideMode = 'face',
 }: CameraComponentProps) {
   const [guideOn, setGuideOn] = React.useState(true);
   const [guideDismissed, setGuideDismissed] = React.useState(false);
@@ -80,7 +83,8 @@ export function CameraComponent({
       return;
     }
 
-    const isAligned = hud.status === 'TRACKING' && hud.faceCentered !== false;
+    const isAligned =
+      hud.status === 'TRACKING' && (guideMode === 'hand' || hud.faceCentered !== false);
 
     if (isAligned) {
       const timer = setTimeout(() => {
@@ -91,7 +95,7 @@ export function CameraComponent({
       // Re-display guide immediately if tracking is lost or face drifts off-center
       setGuideDismissed(false);
     }
-  }, [running, hud.status, hud.faceCentered]);
+  }, [running, hud.status, hud.faceCentered, guideMode]);
 
   const triggerShutter = React.useCallback(() => {
     if (captureDisabled || !running || countdown !== null) return;
@@ -179,7 +183,7 @@ export function CameraComponent({
             <div className="absolute top-[28%] left-[20%] right-[20%] border-t border-dotted border-primary/30" />
             <div className="absolute top-[50%] left-[30%] right-[30%] border-t border-dotted border-primary/30" />
             <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-widest text-primary/80 font-mono">
-              Align Face
+              {guideMode === 'hand' ? 'Align Hand' : guideMode === 'pose' ? 'Show Shoulders' : 'Align Face'}
             </div>
           </div>
         </div>

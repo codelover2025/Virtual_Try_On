@@ -308,13 +308,20 @@ export class PoseFitter {
 
   private resolveLiveScale(landmarks: LandmarkResult): number {
     const key = this.profile.scaleRef;
-    if (key) {
-      const named = landmarks.named[key];
-      if (named && Number.isFinite(named.x) && named.x > 1) {
-        return named.x;
-      }
+    const named = key ? landmarks.named[key] : undefined;
+    const namedVal = named && Number.isFinite(named.x) && named.x > 1 ? named.x : 0;
+    const faceScale = landmarks.scaleRef || 100;
+
+    // Nose-wing width is ~20-40px. Using it as liveScale/100 makes the hoop vanish.
+    // Keep face-distance scale and only nudge by the alar-width ratio.
+    if (key === 'NOSE_WING_WIDTH' && namedVal > 0) {
+      const typical = Math.max(16, faceScale * 0.22);
+      const fit = Math.max(0.75, Math.min(1.35, namedVal / typical));
+      return faceScale * fit;
     }
-    return landmarks.scaleRef || 100;
+
+    if (namedVal > 1) return namedVal;
+    return faceScale;
   }
 
   private isEarringFit(primaryKey: string): boolean {
