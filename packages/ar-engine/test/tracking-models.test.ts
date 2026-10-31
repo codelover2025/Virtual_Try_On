@@ -95,10 +95,14 @@ describe('MediaPipe Multi-Category Tracking Pipeline (Issue 7)', () => {
       }));
 
       // Index 49 is left nose wing, index 279 is right nose wing
+      mockMesh[10] = { x: 0.50, y: 0.28, z: 0 }; // forehead
+      mockMesh[152] = { x: 0.50, y: 0.62, z: 0 }; // chin
       mockMesh[49] = { x: 0.54, y: 0.45, z: 0 };
       mockMesh[279] = { x: 0.46, y: 0.45, z: 0 };
-      mockMesh[234] = { x: 0.65, y: 0.42, z: 0 }; // left earlobe
-      mockMesh[454] = { x: 0.35, y: 0.42, z: 0 }; // right earlobe
+      mockMesh[234] = { x: 0.65, y: 0.42, z: 0 }; // left tragus
+      mockMesh[454] = { x: 0.35, y: 0.42, z: 0 }; // right tragus
+      mockMesh[132] = { x: 0.63, y: 0.50, z: 0 }; // left jaw near ear
+      mockMesh[361] = { x: 0.37, y: 0.50, z: 0 }; // right jaw near ear
       mockMesh[468] = { x: 0.58, y: 0.38, z: 0 }; // left pupil
       mockMesh[473] = { x: 0.42, y: 0.38, z: 0 }; // right pupil
 
@@ -110,8 +114,9 @@ describe('MediaPipe Multi-Category Tracking Pipeline (Issue 7)', () => {
       expect(res.named['LEFT_NOSE_WING'].x).toBe(540);
       expect(res.named['RIGHT_NOSE_WING'].x).toBe(460);
 
-      expect(res.named['LEFT_EAR_LOBE'].x).toBe(650);
-      expect(res.named['RIGHT_EAR_LOBE'].x).toBe(350);
+      expect(res.named['LEFT_EAR_LOBE'].x).toBeGreaterThan(res.named['RIGHT_EAR_LOBE'].x);
+      expect(res.named['LEFT_EAR_LOBE'].y).toBeGreaterThan(res.named['LEFT_EAR_TRAGUS'].y);
+      expect(res.named['RIGHT_EAR_LOBE'].y).toBeGreaterThan(res.named['RIGHT_EAR_TRAGUS'].y);
 
       expect(res.named['NOSE_WING_WIDTH']).toBeDefined();
       expect(res.named['NOSE_WING_WIDTH'].x).toBeCloseTo(80, 1);

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { PoseFit } from '../types.js';
 
 type LoadedAsset = {
@@ -19,8 +20,8 @@ type LoadedAsset = {
  * - Smooth visibility transitions (fade in/out via material opacity).
  * - Memory cleanup: dispose geometry, material and textures on replacement.
  * - Throttled render: only flushes WebGL when pose or visibility changes.
- * - Depth-aware z-positioning from PoseFit depthHint.
- * - Animation mixer support for animated GLTF models.
+ * - Stable overlay depth (do not map raw landmark z into world z).
+ * - Baked GLTF clips are ignored so jewellery sits still on the body.
  * - Render quality scaling based on adaptive controller tier.
  * - Proper disposal of cached assets on cache eviction.
  */
@@ -45,13 +46,14 @@ export class ThreeRenderer {
   private targetOpacity  = 1;
   private currentOpacity = 1;
 
-  // Animation
+  // Animation — kept for disposal only. Try-on never plays baked GLTF clips.
   private mixer: THREE.AnimationMixer | null = null;
-  private clock = new THREE.Clock();
-  private animations: THREE.AnimationClip[] = [];
+  private envTexture: THREE.Texture | null = null;
 
   // Loaders (shared, singleton per renderer)
   private readonly gltfLoader: GLTFLoader;
+  private readonly dracoLoader: DRACOLoader;
+  private lastQualityTier: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL' | null = null;
 
   // Last rendered state for change detection
   private lastPoseKey = '';
@@ -84,25 +86,37 @@ export class ThreeRenderer {
     this.camera.position.z = 10;
 
     // ── Lighting ──────────────────────────────────────────────────────────
-    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    const ambient = new THREE.AmbientLight(0xffffff, 0.38);
+    const hemi = new THREE.HemisphereLight(0xfff4e5, 0x1a120c, 0.45);
 
     // Key light: warm directional from upper-right
-    const key = new THREE.DirectionalLight(0xfff8e7, 1.4);
+    const key = new THREE.DirectionalLight(0xfff8e7, 1.55);
     key.position.set(0.5, 0.8, 1.5);
 
     // Fill light: cool directional from lower-left
-    const fill = new THREE.DirectionalLight(0xddeeff, 0.4);
+    const fill = new THREE.DirectionalLight(0xddeeff, 0.35);
     fill.position.set(-1, -0.3, 0.8);
 
     // Rim/back light for metallic highlights
-    const rim = new THREE.PointLight(0xffffff, 0.5, 800);
+    const rim = new THREE.PointLight(0xffffff, 0.55, 900);
     rim.position.set(0, -200, 300);
 
     // Bottom fill for under-chin necklace illumination
-    const bottomFill = new THREE.DirectionalLight(0xffeedd, 0.25);
+    const bottomFill = new THREE.DirectionalLight(0xffeedd, 0.22);
     bottomFill.position.set(0, -1, 0.5);
 
-    this.scene.add(ambient, key, fill, rim, bottomFill);
+    this.scene.add(ambient, hemi, key, fill, rim, bottomFill);
+
+    try {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      const envScene = new RoomEnvironment();
+      this.envTexture = pmrem.fromScene(envScene, 0.04).texture;
+      this.scene.environment = this.envTexture;
+      envScene.dispose();
+      pmrem.dispose();
+    } catch {
+      this.envTexture = null;
+    }
 
     // ── Depth-Buffer Face Occluder (colorWrite = false, depthWrite = true) ──
     const occluderGeo = new THREE.SphereGeometry(1.0, 24, 24);
@@ -120,10 +134,10 @@ export class ThreeRenderer {
     this.scene.add(this.root, this.secondary);
 
     // ── Loaders ────────────────────────────────────────────────────────────
-    const draco = new DRACOLoader();
-    draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+    this.dracoLoader = new DRACOLoader();
+    this.dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
     this.gltfLoader = new GLTFLoader();
-    this.gltfLoader.setDRACOLoader(draco);
+    this.gltfLoader.setDRACOLoader(this.dracoLoader);
   }
 
   // ─── Resize ────────────────────────────────────────────────────────────────
@@ -143,6 +157,8 @@ export class ThreeRenderer {
   // ─── Quality control ───────────────────────────────────────────────────────
 
   setRenderQuality(tier: 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL'): void {
+    if (tier === this.lastQualityTier) return;
+    this.lastQualityTier = tier;
     switch (tier) {
       case 'HIGH':
         this.pixelRatioOverride = Math.min(window.devicePixelRatio, 2);
@@ -255,6 +271,12 @@ export class ThreeRenderer {
     this.ready = true;
   }
 
+  /** Fetch a GLB into the cache without replacing the currently worn piece. */
+  async warmCache(url: string): Promise<void> {
+    if (!url || url.startsWith('procedural://')) return;
+    await this._loadIntoCache(url);
+  }
+
   async loadModel(url: string, mirrorSec = false): Promise<void> {
     if (!url || url.startsWith('procedural://')) {
       const kind = url ? url.replace('procedural://', '').trim() : 'earring';
@@ -262,60 +284,19 @@ export class ThreeRenderer {
       return;
     }
 
-    // Check cache
-    let cacheEntry = this.assetCache.get(url);
-    if (cacheEntry) {
-      cacheEntry.lastUsed = Date.now();
-    } else {
-      // Evict LRU if cache is full
-      this._evictCacheIfNeeded();
-
-      const gltf = await this.gltfLoader.loadAsync(url);
-
-      // Apply PBR-friendly material tweaks to all meshes.
-      gltf.scene.traverse((node) => {
-        if ((node as THREE.Mesh).isMesh) {
-          const mesh = node as THREE.Mesh;
-          if (mesh.material) {
-            const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-            mats.forEach((m) => {
-              if (m instanceof THREE.MeshStandardMaterial) {
-                m.envMapIntensity = 0.8;
-                m.needsUpdate     = true;
-              }
-            });
-          }
-        }
-      });
-
-      // Store animations if present
-      if (gltf.animations && gltf.animations.length > 0) {
-        this.animations = gltf.animations;
-      }
-
-      cacheEntry = { group: gltf.scene, lastUsed: Date.now() };
-      this.assetCache.set(url, cacheEntry);
-    }
+    const cacheEntry = await this._loadIntoCache(url);
 
     this._clearGroups();
     this.instanceOwnsGeometry = false;
     const primary = cacheEntry.group.clone(true);
     this._isolateMaterials(primary);
+    this._freezeSkinnedPose(primary);
     this.root.add(primary);
-
-    // Setup animation mixer if there are animations
-    if (this.animations.length > 0) {
-      this.mixer = new THREE.AnimationMixer(primary);
-      this.animations.forEach((clip) => {
-        const action = this.mixer!.clipAction(clip);
-        action.play();
-      });
-      this.clock.start();
-    }
 
     if (mirrorSec) {
       const sec = cacheEntry.group.clone(true);
       this._isolateMaterials(sec);
+      this._freezeSkinnedPose(sec);
       sec.scale.x = -1;
       this.secondary.add(sec);
     }
@@ -337,13 +318,11 @@ export class ThreeRenderer {
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
-  render(pose: PoseFit): void {
-    // Update animation mixer
-    if (this.mixer) {
-      const delta = this.clock.getDelta();
-      this.mixer.update(delta);
-    }
+  hasActiveAnimation(): boolean {
+    return this.mixer != null;
+  }
 
+  render(pose: PoseFit, kind?: string): void {
     // Fade animation.
     if (this.currentOpacity !== this.targetOpacity) {
       const fadeSpeed = this.targetOpacity > this.currentOpacity ? 0.22 : 0.15;
@@ -370,10 +349,10 @@ export class ThreeRenderer {
     this.targetOpacity = 1;
 
     // Compute pose key for change detection.
-    const poseKey = `${pose.position.x.toFixed(1)},${pose.position.y.toFixed(1)},${pose.scale.toFixed(3)},${pose.rotationZ.toFixed(4)},${this.currentOpacity.toFixed(2)}`;
+    const poseKey = `${pose.position.x.toFixed(1)},${pose.position.y.toFixed(1)},${pose.scale.toFixed(3)},${pose.rotationZ.toFixed(4)},${(pose.rotationX ?? 0).toFixed(3)},${(pose.rotationY ?? 0).toFixed(3)},${this.currentOpacity.toFixed(2)},${kind ?? ''}`;
 
     // Always render for fade animation, skip only when frozen.
-    const needRender = poseKey !== this.lastPoseKey || this.mixer !== null;
+    const needRender = poseKey !== this.lastPoseKey;
 
     // Occluder mesh transform for head occlusion
     if (pose.secondaryPosition) {
@@ -385,7 +364,7 @@ export class ThreeRenderer {
       );
       const headRadius = headDist * 0.55;
       this.occluder.visible = true;
-      this.occluder.position.set(midX, midY - headRadius * 0.1, (pose.depthHint ?? 0) - 20);
+      this.occluder.position.set(midX, midY - headRadius * 0.1, -18);
       this.occluder.scale.set(headRadius * 0.95, headRadius * 1.35, headRadius * 1.1);
       this.occluder.rotation.y = pose.yaw ?? 0;
       this.occluder.rotation.x = pose.pitch ?? 0;
@@ -420,12 +399,16 @@ export class ThreeRenderer {
       }
     }
 
-    // Apply primary.
-    const s = Math.max(0.3, pose.scale) * 18;
+    // Apply primary. Keep jewellery in a thin overlay slab so landmark-z
+    // does not make metal swim toward/away from the camera.
+    const s = worldScaleForKind(kind, pose.scale);
+    const yaw = pose.rotationY ?? pose.yaw ?? 0;
+    const pitch = pose.rotationX ?? pose.pitch ?? 0;
+    const earPush = Math.max(-14, Math.min(14, yaw * 16));
     if (rootOpacity > 0.01) {
       this.root.visible = true;
-      this.root.position.set(pose.position.x, pose.position.y, pose.depthHint ?? 0);
-      this.root.rotation.z = -pose.rotationZ;
+      this.root.position.set(pose.position.x, pose.position.y, 4 + earPush);
+      this.root.rotation.set(pitch, yaw, -pose.rotationZ);
       this.root.scale.setScalar(s);
       this._setGroupOpacity(this.root, rootOpacity);
     } else {
@@ -438,9 +421,9 @@ export class ThreeRenderer {
       this.secondary.position.set(
         pose.secondaryPosition.x,
         pose.secondaryPosition.y,
-        pose.depthHint ?? 0,
+        4 - earPush,
       );
-      this.secondary.rotation.z = pose.rotationZ;
+      this.secondary.rotation.set(pitch, yaw, -pose.rotationZ);
       this.secondary.scale.setScalar(s);
       this._setGroupOpacity(this.secondary, secOpacity);
     } else {
@@ -486,7 +469,14 @@ export class ThreeRenderer {
       this.mixer.stopAllAction();
       this.mixer = null;
     }
-    this.animations = [];
+    this.envTexture?.dispose();
+    this.envTexture = null;
+    this.scene.environment = null;
+    try {
+      this.dracoLoader.dispose();
+    } catch {
+      // ignore
+    }
     this.renderer.dispose();
   }
 
@@ -503,6 +493,34 @@ export class ThreeRenderer {
 
   // ─── Private helpers ───────────────────────────────────────────────────────
 
+  private async _loadIntoCache(url: string): Promise<{ group: THREE.Group; lastUsed: number }> {
+    const hit = this.assetCache.get(url);
+    if (hit) {
+      hit.lastUsed = Date.now();
+      return hit;
+    }
+
+    this._evictCacheIfNeeded();
+    const gltf = await this.gltfLoader.loadAsync(url);
+    gltf.scene.traverse((node) => {
+      if ((node as THREE.Mesh).isMesh) {
+        const mesh = node as THREE.Mesh;
+        if (mesh.material) {
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          mats.forEach((m) => {
+            if (m instanceof THREE.MeshStandardMaterial) {
+              m.envMapIntensity = 0.8;
+              m.needsUpdate = true;
+            }
+          });
+        }
+      }
+    });
+    const entry = { group: gltf.scene, lastUsed: Date.now() };
+    this.assetCache.set(url, entry);
+    return entry;
+  }
+
   private _clearGroups(): void {
     this._disposeGroup(this.root, this.instanceOwnsGeometry);
     this._disposeGroup(this.secondary, this.instanceOwnsGeometry);
@@ -514,7 +532,22 @@ export class ThreeRenderer {
       this.mixer.stopAllAction();
       this.mixer = null;
     }
-    this.animations = [];
+  }
+
+  /** Disable baked skin/morph motion so a GLB cannot idle-animate on the face. */
+  private _freezeSkinnedPose(root: THREE.Object3D): void {
+    root.traverse((node) => {
+      const mesh = node as THREE.SkinnedMesh;
+      if (mesh.isSkinnedMesh) {
+        mesh.pose();
+      }
+      const morph = node as THREE.Mesh;
+      if (morph.morphTargetInfluences) {
+        for (let i = 0; i < morph.morphTargetInfluences.length; i++) {
+          morph.morphTargetInfluences[i] = 0;
+        }
+      }
+    });
   }
 
   private _isolateMaterials(root: THREE.Object3D): void {
@@ -611,8 +644,8 @@ function createGoldDropEarring(): THREE.Group {
   const gold  = new THREE.MeshStandardMaterial({
     color:     0xd4af37,
     metalness: 0.97,
-    roughness: 0.18,
-    envMapIntensity: 0.9,
+    roughness: 0.14,
+    envMapIntensity: 1.2,
   });
   const hook = new THREE.Mesh(
     new THREE.TorusGeometry(0.12, 0.032, 16, 32, Math.PI), gold,
@@ -643,21 +676,32 @@ function createGoldDropEarring(): THREE.Group {
 
 // ─── Procedural jewellery for other categories ──────────────────────────────
 
+function worldScaleForKind(kind: string | undefined, poseScale: number): number {
+  const s = Math.max(0.3, poseScale);
+  const k = (kind ?? '').toUpperCase();
+  if (k.includes('EARRING')) return s * 42;
+  if (k.includes('NOSE')) return s * 30;
+  if (k.includes('NECKLACE') || k.includes('PENDANT') || k.includes('MANGALSUTRA')) return s * 24;
+  if (k.includes('RING')) return s * 16;
+  if (k.includes('BANGLE') || k.includes('BRACELET') || k.includes('WATCH')) return s * 20;
+  return s * 18;
+}
+
 function createGoldMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     color: 0xd4af37,
-    metalness: 0.95,
-    roughness: 0.18,
-    envMapIntensity: 1.0,
+    metalness: 0.96,
+    roughness: 0.16,
+    envMapIntensity: 1.15,
   });
 }
 
 function createGemMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    metalness: 0.1,
-    roughness: 0.05,
-    envMapIntensity: 1.2,
+    color: 0xf7fbff,
+    metalness: 0.08,
+    roughness: 0.04,
+    envMapIntensity: 1.35,
   });
 }
 

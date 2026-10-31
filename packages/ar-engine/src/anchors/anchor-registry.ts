@@ -20,7 +20,7 @@ register(JewelleryKind.EARRINGS, {
     primaryAnchor: 'LEFT_EAR_LOBE',
     secondaryAnchor: 'RIGHT_EAR_LOBE',
     scaleRef: 'FACE_WIDTH',
-    offset: { x: 0, y: 0.02, z: 0 },
+    offset: { x: 0, y: 0.06, z: 0 },
     minScale: 0.35,
     maxScale: 2.5,
   },

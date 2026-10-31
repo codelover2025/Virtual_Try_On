@@ -83,6 +83,11 @@ export class HandDetector implements ModelAdapter {
   }
 
   dispose(): void {
+    try {
+      this.detector?.dispose();
+    } catch {
+      // ignore
+    }
     this.detector = null;
     this.prevScaleRef = 80;
     this.prevNamed = {};
@@ -246,10 +251,19 @@ export class HandDetector implements ModelAdapter {
     this.prevScaleRef = scaleRef;
 
     // ── Temporal smoothing per-landmark ──────────────────────────────────
-    const smoothAlpha = this.frameCount < 3 ? 0.8 : 0.55;
+    const smoothAlpha = this.frameCount < 3 ? 0.85 : 0.7;
     for (const [key, point] of Object.entries(named)) {
       // Skip metadata-only entries
-      if (key === 'HANDEDNESS' || key === 'PALM_NORMAL' || key.startsWith('FINGER_CURL_')) continue;
+      if (
+        key === 'HANDEDNESS' ||
+        key === 'PALM_NORMAL' ||
+        key === 'BANGLE_ROT' ||
+        key === 'WRIST_DIR' ||
+        key.startsWith('FINGER_CURL_') ||
+        key.startsWith('FINGER_DIR_') ||
+        key.startsWith('RING_ROT_') ||
+        key.endsWith('_WIDTH')
+      ) continue;
       const prev = this.prevNamed[key];
       if (prev) {
         named[key] = {

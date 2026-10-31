@@ -119,37 +119,50 @@ export class Canvas2dRenderer {
       ? img.naturalHeight / img.naturalWidth
       : 260 / 320;
 
+    const kindKey = (kind ?? '').toUpperCase();
+    const isEarring = kindKey.includes('EARRING') || this.currentUrl.includes('earring');
+    const isNose = kindKey.includes('NOSE');
+    const isRing = kindKey === 'RINGS' || kindKey === 'RING';
+    const isBangle =
+      kindKey.includes('BANGLE') || kindKey.includes('BRACELET') || kindKey.includes('WATCH');
+
     if (isNecklace) {
       // Real anatomical scale: necklace spans ~68-75% of biacromial shoulder width
-      // pose.scale is (shoulderWidth / 100) * defaultScale
-      // For average adult shoulder span of 300px in camera, w ≈ 210-230px
       const shoulderSpan = pose.scale * 100;
       w = Math.max(160, Math.min(480, shoulderSpan * 0.72));
       h = w * aspect;
-      // Anchor origin at the top collar curve (y ~ 0.12 of asset height)
       originX = -w / 2;
       originY = -h * 0.12;
+    } else if (isEarring) {
+      w = Math.max(18, Math.min(90, pose.scale * 36));
+      h = w * aspect;
+      originX = -w / 2;
+      originY = -h * 0.06;
+    } else if (isNose) {
+      w = Math.max(10, Math.min(36, pose.scale * 14));
+      h = w * aspect;
+      originX = -w / 2;
+      originY = -h * 0.35;
+    } else if (isRing) {
+      w = Math.max(14, Math.min(48, pose.scale * 22));
+      h = w * aspect;
+      originX = -w / 2;
+      originY = -h / 2;
+    } else if (isBangle) {
+      w = Math.max(28, Math.min(110, pose.scale * 48));
+      h = w * aspect;
+      originX = -w / 2;
+      originY = -h / 2;
     } else {
-      const isEarring = kind === 'EARRINGS' || this.currentUrl.includes('earring');
-      if (isEarring) {
-        w = Math.max(20, Math.min(100, pose.scale * 34));
-        h = w * aspect;
-        originX = -w / 2;
-        originY = -h * 0.08;
-      } else {
-        const baseSize = Math.max(img.naturalWidth, img.naturalHeight);
-        const displaySize = Math.max(20, baseSize * pose.scale * 0.35);
-        w = (img.naturalWidth / baseSize) * displaySize;
-        h = (img.naturalHeight / baseSize) * displaySize;
-        originX = -w / 2;
-        originY = -h / 2;
-      }
+      w = Math.max(24, Math.min(140, pose.scale * 32));
+      h = w * aspect;
+      originX = -w / 2;
+      originY = -h / 2;
     }
 
     let alpha = this.currentOpacity * (pose.confidence > 0 ? Math.min(1, pose.confidence + 0.3) : 1);
 
-    // FIX 7: When head yaw exceeds ~35 degrees (0.61 rad), fade out earring on the far side
-    const isEarring = kind === 'EARRINGS' || this.currentUrl.includes('earring');
+    // When head yaw exceeds ~35 degrees, fade out earring on the far side
     if (isEarring && pose.secondaryPosition && pose.yaw !== undefined) {
       const FAR_YAW_THRESHOLD = 0.61; // ~35 deg
       const FAR_YAW_MAX = 0.85;       // ~48.7 deg
@@ -175,11 +188,10 @@ export class Canvas2dRenderer {
     if (secondary && this.mirrorSecondary) {
       this.ctx.scale(-1, 1);
     }
-    // Apply subtle drop shadow for depth.
-    this.ctx.shadowColor   = 'rgba(0,0,0,0.30)';
-    this.ctx.shadowBlur    = 10;
-    this.ctx.shadowOffsetY = 4;
-    this.ctx.shadowOffsetX = 1;
+    this.ctx.shadowColor   = 'rgba(0,0,0,0.16)';
+    this.ctx.shadowBlur    = 3;
+    this.ctx.shadowOffsetY = 1;
+    this.ctx.shadowOffsetX = 0;
     this.ctx.drawImage(img, originX, originY, w, h);
     this.ctx.restore();
     this.ctx.globalAlpha = 1;
