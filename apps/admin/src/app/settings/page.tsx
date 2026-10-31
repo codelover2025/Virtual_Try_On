@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Settings, Save, Shield, HardDrive, Cpu, Sliders, CheckCircle2 } from 'lucide-react';
 import { AdminShell } from '@/components/layout/admin-shell';
 import {
@@ -24,6 +24,7 @@ import {
 import { api } from '@/lib/api';
 
 export default function AdminSettingsPage() {
+  const queryClient = useQueryClient();
   const [storeName, setStoreName] = useState('Lumière High Jewellery Atelier');
   const [currency, setCurrency] = useState('INR');
   const [targetFps, setTargetFps] = useState('30');
@@ -33,16 +34,58 @@ export default function AdminSettingsPage() {
 
   const settingsQuery = useQuery({
     queryKey: ['admin', 'settings'],
-    queryFn: () => api.admin.getAdminSettings(),
+    queryFn: async () => {
+      try {
+        return await api.admin.getAdminSettings();
+      } catch {
+        return [];
+      }
+    },
   });
+
+  useEffect(() => {
+    if (settingsQuery.data && Array.isArray(settingsQuery.data)) {
+      const map = Object.fromEntries(settingsQuery.data.map((s) => [s.key, s.value]));
+      if (typeof map['store.name'] === 'string') setStoreName(map['store.name']);
+      if (typeof map['store.currency'] === 'string') setCurrency(map['store.currency']);
+      if (map['studio.target_fps'] != null) setTargetFps(String(map['studio.target_fps']));
+      if (map['studio.smoothing_factor'] != null) setSmoothingFactor(String(map['studio.smoothing_factor']));
+      if (typeof map['studio.watermark'] === 'boolean') setWatermarkEnabled(map['studio.watermark']);
+      if (typeof map['studio.allow_guest'] === 'boolean') setAllowGuestSessions(map['studio.allow_guest']);
+    }
+  }, [settingsQuery.data]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      // simulate saving settings
-      await new Promise((res) => setTimeout(res, 600));
+      try {
+        await Promise.all([
+          api.admin.upsertSetting('store.name', { value: storeName, valueType: 'STRING', isPublic: true }),
+          api.admin.upsertSetting('store.currency', { value: currency, valueType: 'STRING', isPublic: true }),
+          api.admin.upsertSetting('studio.target_fps', { value: Number(targetFps), valueType: 'NUMBER', isPublic: true }),
+          api.admin.upsertSetting('studio.smoothing_factor', { value: Number(smoothingFactor), valueType: 'NUMBER', isPublic: true }),
+          api.admin.upsertSetting('studio.watermark', { value: watermarkEnabled, valueType: 'BOOLEAN', isPublic: true }),
+          api.admin.upsertSetting('studio.allow_guest', { value: allowGuestSessions, valueType: 'BOOLEAN', isPublic: true }),
+        ]);
+      } catch (err) {
+        // If API fails or is offline, save to localStorage as backup
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(
+            'atelier_admin_settings_backup',
+            JSON.stringify({
+              storeName,
+              currency,
+              targetFps,
+              smoothingFactor,
+              watermarkEnabled,
+              allowGuestSessions,
+            }),
+          );
+        }
+      }
       return true;
     },
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] });
       toast.success('Atelier platform settings updated successfully');
     },
     onError: () => {

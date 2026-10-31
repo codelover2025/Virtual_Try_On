@@ -45,10 +45,11 @@ export class ProductsRepository {
   }
 
   findByIdOrSlug(idOrSlug: string, publishedOnly = false) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idOrSlug);
     return this.prisma.product.findFirst({
       where: {
         deletedAt: null,
-        OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+        ...(isUuid ? { OR: [{ id: idOrSlug }, { slug: idOrSlug }] } : { slug: idOrSlug }),
         ...(publishedOnly ? { status: ProductStatus.PUBLISHED } : {}),
       },
       include: {

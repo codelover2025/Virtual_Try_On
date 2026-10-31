@@ -14,7 +14,7 @@ async function bootstrap() {
   app.setGlobalPrefix('api/v1');
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.enableCors({
-    origin: config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'],
+    origin: config.get<string[]>('corsOrigins') ?? ['http://localhost:3000', 'http://localhost:3001'],
     credentials: true,
   });
   app.useGlobalPipes(

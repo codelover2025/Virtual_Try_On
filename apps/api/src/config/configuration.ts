@@ -9,7 +9,7 @@ export default () => ({
     accessTtl: process.env.JWT_ACCESS_TTL ?? '15m',
     refreshTtl: process.env.JWT_REFRESH_TTL ?? '7d',
   },
-  corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
+  corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:3000,http://localhost:3001')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),

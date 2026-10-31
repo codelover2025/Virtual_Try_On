@@ -35,6 +35,7 @@ import {
   toast,
 } from '@vj/ui';
 import { api } from '@/lib/api';
+import { storefrontUrl } from '@/lib/storefront-url';
 
 const ALLOWED_EXTENSIONS = ['.glb', '.gltf', '.png', '.webp'];
 const MAX_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
@@ -66,6 +67,29 @@ export default function AdminUploadJewelleryPage() {
     queryKey: ['admin', 'products', 'for-assets'],
     queryFn: () => api.catalog.listProducts({ pageSize: 100 }),
   });
+
+  const handleProductChange = (id: string) => {
+    setProductId(id);
+    const found = productsQuery.data?.items.find((p) => p.id === id);
+    if (found) {
+      if (found.jewelleryKind === 'NECKLACE' || found.jewelleryKind === 'PENDANT' || found.jewelleryKind === 'MANGALSUTRA') {
+        setAnchorType(AnchorType.NECK_BASE);
+        setMirrorForOppositeEar(false);
+      } else if (found.jewelleryKind === 'NOSE_RING') {
+        setAnchorType(AnchorType.NOSE_WING);
+        setMirrorForOppositeEar(false);
+      } else if (found.jewelleryKind === 'RINGS') {
+        setAnchorType(AnchorType.FINGER_BASE);
+        setMirrorForOppositeEar(false);
+      } else if (found.jewelleryKind === 'BANGLES' || found.jewelleryKind === 'BRACELET' || found.jewelleryKind === 'WATCH') {
+        setAnchorType(AnchorType.WRIST);
+        setMirrorForOppositeEar(false);
+      } else {
+        setAnchorType(AnchorType.EAR_LOBE);
+        setMirrorForOppositeEar(true);
+      }
+    }
+  };
 
   const handleFileUpload = async (file: File) => {
     const ext = `.${file.name.split('.').pop()?.toLowerCase() ?? ''}`;
@@ -191,7 +215,7 @@ export default function AdminUploadJewelleryPage() {
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">
                     Target Catalogue Item *
                   </Label>
-                  <Select value={productId} onValueChange={setProductId}>
+                  <Select value={productId} onValueChange={handleProductChange}>
                     <SelectTrigger className="rounded-xl text-xs">
                       <SelectValue placeholder="Choose a piece from inventory…" />
                     </SelectTrigger>
@@ -509,7 +533,7 @@ export default function AdminUploadJewelleryPage() {
 
                 {productId && (
                   <Button asChild variant="outline" size="sm" className="w-full rounded-full text-xs mt-2">
-                    <a href={`http://localhost:3000/try-on/${productId}`} target="_blank" rel="noreferrer">
+                    <a href={storefrontUrl(`/try-on/${productId}`)} target="_blank" rel="noreferrer">
                       <Eye className="h-3.5 w-3.5 mr-1 text-primary" /> Test Live on Camera
                     </a>
                   </Button>

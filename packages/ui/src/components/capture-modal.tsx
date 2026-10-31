@@ -31,6 +31,11 @@ export function CaptureModal({
   const [copied, setCopied] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
 
+  React.useEffect(() => {
+    setSaved(false);
+    setCopied(false);
+  }, [previewUrl]);
+
   const handleShare = async () => {
     try {
       if (navigator.share && previewUrl) {

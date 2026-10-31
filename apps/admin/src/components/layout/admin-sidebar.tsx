@@ -16,6 +16,7 @@ import {
 import { cn, Button } from '@vj/ui';
 import { useAuthStore } from '@/stores/auth-store';
 import { api } from '@/lib/api';
+import { storefrontUrl } from '@/lib/storefront-url';
 
 export const adminNavItems = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -83,7 +84,7 @@ export function AdminSidebar({ onNavigate }: { onNavigate?: () => void }) {
       {/* Quick Link to Customer Storefront */}
       <div className="px-3 py-2">
         <a
-          href="http://localhost:3000"
+          href={storefrontUrl()}
           target="_blank"
           rel="noreferrer"
           className="flex items-center justify-between rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition hover:border-primary/40"
@@ -92,7 +93,7 @@ export function AdminSidebar({ onNavigate }: { onNavigate?: () => void }) {
             <ExternalLink className="h-3.5 w-3.5 text-primary" />
             <span>Storefront Studio</span>
           </span>
-          <span className="text-[10px] font-mono text-primary font-semibold">:3000</span>
+          <span className="text-[10px] font-mono text-primary font-semibold">Live</span>
         </a>
       </div>
 

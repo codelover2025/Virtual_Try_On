@@ -4,7 +4,11 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   transpilePackages: ['@vj/ar-engine', '@vj/shared', '@vj/types', '@vj/ui', '@vj/api-client', '@vj/hooks'],
   images: {
-    remotePatterns: [{ protocol: 'https', hostname: '**' }, { protocol: 'http', hostname: 'localhost' }],
+    remotePatterns: [
+      { protocol: 'https', hostname: '**' },
+      { protocol: 'http', hostname: 'localhost', port: '4000' },
+      { protocol: 'http', hostname: 'localhost', pathname: '/**' },
+    ],
   },
   webpack: (config) => {
     config.resolve.extensionAlias = {

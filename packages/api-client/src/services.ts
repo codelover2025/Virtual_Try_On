@@ -193,6 +193,15 @@ export function createAdminApi(client: ApiClient) {
       client.post<unknown>(`/admin/products/${productId}/assets/${assetId}/activate`),
 
     getAdminSettings: () => client.get<AdminSettingItem[]>('/admin/settings'),
+    upsertSetting: (
+      key: string,
+      body: {
+        value: unknown;
+        valueType: string;
+        description?: string;
+        isPublic?: boolean;
+      },
+    ) => client.put<AdminSettingItem>(`/admin/settings/${encodeURIComponent(key)}`, body),
     getAnalyticsOverview: (from?: string, to?: string) =>
       client.get<Record<string, unknown>>('/admin/analytics/overview', { from, to }),
   };

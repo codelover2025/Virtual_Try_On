@@ -9,6 +9,13 @@ const nextConfig: NextConfig = {
     '@vj/hooks',
     '@vj/api-client',
   ],
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: '**' },
+      { protocol: 'http', hostname: 'localhost', port: '4000' },
+      { protocol: 'http', hostname: 'localhost', pathname: '/**' },
+    ],
+  },
   webpack: (config) => {
     config.resolve.extensionAlias = {
       ...config.resolve.extensionAlias,

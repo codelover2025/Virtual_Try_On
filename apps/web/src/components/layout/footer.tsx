@@ -85,7 +85,12 @@ export function Footer() {
                 </Link>
               </li>
               <li>
-                <a href="http://localhost:3001" target="_blank" rel="noreferrer" className="hover:text-primary transition">
+                <a
+                  href={process.env.NEXT_PUBLIC_ADMIN_URL ?? 'http://localhost:3001'}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:text-primary transition"
+                >
                   Executive Console (Admin)
                 </a>
               </li>

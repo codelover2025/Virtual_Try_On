@@ -1,24 +1,59 @@
 'use client';
 
+import { Suspense, useMemo } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '@vj/api-client';
 import { Button, PageLoader, EmptyState } from '@vj/ui';
 import { ArrowLeft, Sparkles } from 'lucide-react';
+import type { JewelleryKind } from '@vj/shared';
 import { api } from '@/lib/api';
 import { TryOnExperience } from '@/features/try-on/TryOnExperience';
 import {
   cacheCatalogue,
   getCachedOrFallbackCatalogue,
   getProductFromCacheOrFallback,
+  kindFromCategorySlug,
 } from '@/features/try-on/offline-catalog';
 
-export default function TryOnStudioHubPage() {
+function TryOnStudioContent() {
+  const searchParams = useSearchParams();
+  const categoryParam = searchParams.get('category')?.toLowerCase();
+  const rawKindParam = searchParams.get('kind')?.toUpperCase();
+
+  const normalizedKind: JewelleryKind | undefined =
+    rawKindParam === 'EARRING'
+      ? 'EARRINGS'
+      : rawKindParam === 'RING'
+        ? 'RINGS'
+        : (rawKindParam as JewelleryKind | undefined);
+
+  const validKinds: JewelleryKind[] = [
+    'EARRINGS',
+    'NECKLACE',
+    'RINGS',
+    'BANGLES',
+    'NOSE_RING',
+    'BRACELET',
+    'PENDANT',
+    'MANGALSUTRA',
+    'SUNGLASSES',
+    'WATCH',
+  ];
+
+  const targetKind: JewelleryKind | undefined =
+    normalizedKind && validKinds.includes(normalizedKind)
+      ? normalizedKind
+      : categoryParam
+        ? kindFromCategorySlug(categoryParam)
+        : undefined;
+
   const productsQuery = useQuery({
-    queryKey: queryKeys.products.list({ pageSize: 12 }),
+    queryKey: queryKeys.products.list({ pageSize: 24 }),
     queryFn: async () => {
       try {
-        const res = await api.catalog.listProducts({ pageSize: 12 });
+        const res = await api.catalog.listProducts({ pageSize: 24 });
         cacheCatalogue(res.items);
         return res;
       } catch {
@@ -34,7 +69,17 @@ export default function TryOnStudioHubPage() {
     },
   });
 
-  const featured = productsQuery.data?.items[0];
+  const items = productsQuery.data?.items ?? [];
+
+  // Find a product matching the category/kind if requested, otherwise first product
+  const featured = useMemo(() => {
+    if (!items.length) return undefined;
+    if (targetKind) {
+      const match = items.find((p) => p.jewelleryKind === targetKind);
+      if (match) return match;
+    }
+    return items[0];
+  }, [items, targetKind]);
 
   const productDetailQuery = useQuery({
     queryKey: queryKeys.products.detail(featured?.id ?? ''),
@@ -76,8 +121,10 @@ export default function TryOnStudioHubPage() {
           <PageLoader label="Opening Virtual Studio…" />
         ) : productDetailQuery.data ? (
           <TryOnExperience
+            key={productDetailQuery.data.id}
             product={productDetailQuery.data}
             alternativeProducts={productsQuery.data?.items}
+            initialKindFilter={targetKind ?? 'ALL'}
           />
         ) : (
           <EmptyState
@@ -92,5 +139,13 @@ export default function TryOnStudioHubPage() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function TryOnStudioHubPage() {
+  return (
+    <Suspense fallback={<PageLoader label="Opening Virtual Studio…" />}>
+      <TryOnStudioContent />
+    </Suspense>
   );
 }

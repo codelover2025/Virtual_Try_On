@@ -1,7 +1,19 @@
 'use client';
 
 import * as React from 'react';
-import { Camera, FlipHorizontal, RefreshCw, Sun, Sparkles, AlertCircle, Eye, EyeOff } from 'lucide-react';
+import {
+  Camera,
+  CameraOff,
+  FlipHorizontal,
+  RefreshCw,
+  Sun,
+  Sparkles,
+  AlertCircle,
+  Eye,
+  EyeOff,
+  ShieldAlert,
+  Loader2,
+} from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { Button } from './button.js';
 
@@ -27,6 +39,8 @@ export interface CameraComponentProps {
   onFlip: () => void;
   onMirrorToggle: () => void;
   onCapture: () => void;
+  onRetry?: () => void;
+  onDismissError?: () => void;
   captureDisabled?: boolean;
   aspectRatioClass?: string;
   className?: string;
@@ -46,6 +60,8 @@ export function CameraComponent({
   onFlip,
   onMirrorToggle,
   onCapture,
+  onRetry,
+  onDismissError,
   captureDisabled = false,
   aspectRatioClass = 'aspect-[4/5]',
   className,
@@ -243,8 +259,56 @@ export function CameraComponent({
         ) : null}
       </div>
 
-      {/* Start Camera Hero Prompt if idle */}
-      {!running ? (
+      {/* Camera Permission / Access Denied & Retry State */}
+      {!running && hud.error ? (
+        <div
+          data-testid="camera-error-state"
+          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-gradient-to-t from-black via-black/95 to-black/85 p-6 text-center text-white animate-in fade-in duration-200"
+        >
+          <div className="rounded-full bg-destructive/20 p-4 ring-8 ring-destructive/10 text-destructive">
+            <CameraOff className="h-10 w-10 text-amber-400" />
+          </div>
+          <div>
+            <h3 className="font-serif text-2xl font-semibold tracking-wide text-white">Camera Access Needed</h3>
+            <p className="mt-2 max-w-sm text-xs sm:text-sm text-white/80 leading-relaxed">{hud.error}</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-3.5 max-w-sm text-left text-xs text-white/70 space-y-2">
+            <p className="font-semibold text-white/90 flex items-center gap-1.5 text-xs">
+              <ShieldAlert className="h-3.5 w-3.5 text-primary shrink-0" /> Camera Permission Tips:
+            </p>
+            <ul className="list-disc pl-4 space-y-1 text-[11px] text-white/60 leading-normal">
+              <li>Look for the camera or lock icon in your browser address bar and set to <strong>Allow</strong>.</li>
+              <li>Make sure no other video application (e.g. Zoom, Teams) is using the webcam.</li>
+              <li>On mobile Safari/Chrome, verify camera permissions in device Settings.</li>
+            </ul>
+          </div>
+          <div className="flex items-center gap-3 mt-1">
+            <Button
+              size="lg"
+              data-testid="retry-camera-btn"
+              onClick={onRetry || onStart}
+              disabled={starting}
+              className="rounded-full px-7 py-5 text-xs sm:text-sm font-medium shadow-xl shadow-primary/20 hover:scale-105 transition-transform"
+            >
+              <RefreshCw className={cn('mr-2 h-4 w-4', starting && 'animate-spin')} />
+              {starting ? 'Connecting…' : 'Retry Camera'}
+            </Button>
+            {onDismissError ? (
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={onDismissError}
+                className="rounded-full px-5 py-5 text-xs text-white/70 border-white/20 hover:bg-white/10"
+              >
+                Dismiss
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Start Camera Hero Prompt if idle and no error */}
+      {!running && !hud.error ? (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-gradient-to-t from-black via-black/80 to-black/60 p-6 text-center text-white">
           <div className="rounded-full bg-primary/20 p-4 ring-8 ring-primary/10">
             <Sparkles className="h-10 w-10 text-primary animate-pulse" />
@@ -260,12 +324,30 @@ export function CameraComponent({
             disabled={starting}
             className="rounded-full px-8 py-6 font-medium shadow-xl shadow-primary/20 hover:scale-105 transition-transform"
           >
-            <Camera className="mr-2 h-5 w-5" />
+            {starting ? (
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+            ) : (
+              <Camera className="mr-2 h-5 w-5" />
+            )}
             {starting ? 'Calibrating Camera…' : 'Open Virtual Studio'}
           </Button>
           <p className="text-[11px] text-white/50">Private & Secure · Video is processed strictly on your device</p>
         </div>
       ) : null}
+
+      {/* Loading calibration overlay while starting */}
+      {starting && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/80 backdrop-blur-xs p-6 text-center text-white animate-in fade-in duration-150">
+          <div className="relative flex items-center justify-center">
+            <div className="h-14 w-14 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+            <Sparkles className="absolute h-5 w-5 text-primary animate-pulse" />
+          </div>
+          <div>
+            <h4 className="font-serif text-base font-medium text-white">Connecting Virtual Studio</h4>
+            <p className="mt-0.5 text-xs text-white/60">Calibrating lenses and initializing real-time 3D tracking…</p>
+          </div>
+        </div>
+      )}
 
       {/* Dedicated Bottom Safe Zone Shutter Bar (Never covers jewellery or neck) */}
       {running ? (
@@ -306,11 +388,21 @@ export function CameraComponent({
         </div>
       ) : null}
 
-      {/* Error banner if camera fails */}
-      {hud.error ? (
-        <div className="absolute bottom-28 left-4 right-4 z-30 rounded-xl border border-destructive/50 bg-destructive/90 p-3 text-center text-xs text-white backdrop-blur-md flex items-center justify-center gap-2">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          <span>{hud.error}</span>
+      {/* Error banner if camera fails while running */}
+      {running && hud.error ? (
+        <div className="absolute bottom-28 left-4 right-4 z-30 rounded-xl border border-destructive/50 bg-destructive/90 p-3 text-center text-xs text-white backdrop-blur-md flex items-center justify-between gap-2 shadow-lg">
+          <div className="flex items-center gap-2 text-left">
+            <AlertCircle className="h-4 w-4 shrink-0 text-white" />
+            <span>{hud.error}</span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRetry || onStart}
+            className="rounded-full h-7 px-3 text-xs bg-white/20 hover:bg-white/30 text-white border-white/30 shrink-0"
+          >
+            Retry
+          </Button>
         </div>
       ) : null}
     </div>
