@@ -62,7 +62,7 @@ export class TrackingEngine {
     this.degradeAfterMs    = options.degradeAfterMs    ?? 220;
     this.minConfidence     = options.minConfidence     ?? 0.48;
     this.reacquireDelayMs  = options.reacquireDelayMs  ?? 150;
-    this.acquireFrames     = options.acquireFrames     ?? 3;
+    this.acquireFrames     = options.acquireFrames     ?? 2;
   }
 
   setStatusChangeCallback(cb: (status: TrackingStatus, prev?: TrackingStatus) => void): void {

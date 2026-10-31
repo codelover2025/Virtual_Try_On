@@ -28,11 +28,22 @@ export const FINGER_JOINTS: Record<number, [string, string]> = {
  * - Confidence-weighted temporal smoothing for scale and position jitter reduction.
  * - Hand chirality detection (left vs right hand).
  */
+const MP_HAND_NAMES = [
+  'wrist',
+  'thumb_cmc', 'thumb_mcp', 'thumb_ip', 'thumb_tip',
+  'index_finger_mcp', 'index_finger_pip', 'index_finger_dip', 'index_finger_tip',
+  'middle_finger_mcp', 'middle_finger_pip', 'middle_finger_dip', 'middle_finger_tip',
+  'ring_finger_mcp', 'ring_finger_pip', 'ring_finger_dip', 'ring_finger_tip',
+  'pinky_finger_mcp', 'pinky_finger_pip', 'pinky_finger_dip', 'pinky_finger_tip',
+] as const;
+
 export class HandDetector implements ModelAdapter {
   readonly name = 'hand';
   private detector: handPoseDetection.HandDetector | null = null;
+  private handLandmarker: { detectForVideo: (input: PixelInput, ts: number) => any; close?: () => void } | null = null;
   private prevScaleRef = 80;
   private frameCount = 0;
+  private lastVisionTs = 0;
 
   // Per-landmark temporal smoothing state
   private prevNamed: Record<string, { x: number; y: number }> = {};
@@ -41,17 +52,80 @@ export class HandDetector implements ModelAdapter {
   private lastSecondaryHand: LandmarkResult | null = null;
 
   async load(): Promise<void> {
-    this.detector = await handPoseDetection.createDetector(
-      handPoseDetection.SupportedModels.MediaPipeHands,
-      {
-        runtime: 'tfjs',
-        modelType: 'full',   // Full model for better accuracy
-        maxHands: 2,         // Support multi-hand (bangle both wrists)
-      },
-    );
+    try {
+      const { FilesetResolver, HandLandmarker } = await import('@mediapipe/tasks-vision');
+      const vision = await FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm',
+      );
+      this.handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+          delegate: 'GPU',
+        },
+        runningMode: 'VIDEO',
+        numHands: 2,
+      });
+    } catch {
+      this.handLandmarker = null;
+    }
+
+    if (this.handLandmarker) return;
+
+    // TF.js lite is more reliable in constrained browsers than the full model.
+    try {
+      this.detector = await handPoseDetection.createDetector(
+        handPoseDetection.SupportedModels.MediaPipeHands,
+        {
+          runtime: 'tfjs',
+          modelType: 'lite',
+          maxHands: 2,
+        },
+      );
+    } catch {
+      this.detector = await handPoseDetection.createDetector(
+        handPoseDetection.SupportedModels.MediaPipeHands,
+        {
+          runtime: 'tfjs',
+          modelType: 'full',
+          maxHands: 2,
+        },
+      );
+    }
   }
 
   async estimate(input: PixelInput): Promise<LandmarkResult | null> {
+    const width = 'videoWidth' in input ? input.videoWidth : input.width;
+    const height = 'videoHeight' in input ? input.videoHeight : input.height;
+
+    if (this.handLandmarker && width > 0 && height > 0) {
+      try {
+        const ts = Math.max(this.lastVisionTs + 1, performance.now());
+        this.lastVisionTs = ts;
+        const res = this.handLandmarker.detectForVideo(input, ts);
+        const mesh = res?.landmarks?.[0];
+        if (mesh && mesh.length >= 21) {
+          this.frameCount++;
+          if (res.landmarks.length > 1) {
+            this.lastSecondaryHand = this._processMediaPipe21(
+              res.landmarks[1],
+              width,
+              height,
+              res.handedness?.[1]?.[0]?.categoryName,
+            );
+          }
+          return this._processMediaPipe21(
+            mesh,
+            width,
+            height,
+            res.handedness?.[0]?.[0]?.categoryName,
+          );
+        }
+      } catch {
+        // Fall through to TF.js
+      }
+    }
+
     if (!this.detector) return null;
 
     let hands: handPoseDetection.Hand[];
@@ -69,7 +143,6 @@ export class HandDetector implements ModelAdapter {
 
     this.frameCount++;
 
-    // Process secondary hand for dual-wrist bangle support
     if (hands.length > 1) {
       this.lastSecondaryHand = this._processHand(hands[1]!);
     }
@@ -89,10 +162,40 @@ export class HandDetector implements ModelAdapter {
       // ignore
     }
     this.detector = null;
+    if (this.handLandmarker?.close) {
+      try {
+        this.handLandmarker.close();
+      } catch {
+        // ignore
+      }
+    }
+    this.handLandmarker = null;
     this.prevScaleRef = 80;
     this.prevNamed = {};
     this.lastSecondaryHand = null;
     this.frameCount = 0;
+    this.lastVisionTs = 0;
+  }
+
+  private _processMediaPipe21(
+    mesh: Array<{ x: number; y: number; z?: number }>,
+    width: number,
+    height: number,
+    handedness?: string,
+  ): LandmarkResult {
+    const named: LandmarkResult['named'] = {};
+    const points = mesh.slice(0, 21).map((p, i) => {
+      const name = MP_HAND_NAMES[i];
+      const point = {
+        x: p.x * width,
+        y: p.y * height,
+        z: p.z != null ? p.z * width : undefined,
+        name,
+      };
+      if (name) named[name] = point;
+      return point;
+    });
+    return this._finishHand(named, points, 0.88, handedness);
   }
 
   // ─── Private hand processing ───────────────────────────────────────────────
@@ -105,13 +208,19 @@ export class HandDetector implements ModelAdapter {
       return point;
     });
 
-    // ── Normalize wrist alias ──────────────────────────────────────────────
+    return this._finishHand(named, points, hand.score ?? 0.8, hand.handedness);
+  }
+
+  private _finishHand(
+    named: LandmarkResult['named'],
+    points: LandmarkResult['points'],
+    score: number,
+    handedness?: string,
+  ): LandmarkResult {
     const wrist = named['wrist'] ?? points[0];
     if (wrist) named['WRIST'] = wrist;
 
-    // ── Hand chirality detection ───────────────────────────────────────────
-    const handedness = hand.handedness ?? 'Right';
-    named['HANDEDNESS'] = { x: handedness === 'Left' ? 0 : 1, y: 0 };
+    named['HANDEDNESS'] = { x: (handedness ?? 'Right') === 'Left' ? 0 : 1, y: 0 };
 
     // ── Compute ring slots and finger direction vectors ────────────────────
     for (const [idxStr, [proxKey, distKey]] of Object.entries(FINGER_JOINTS)) {
@@ -243,12 +352,12 @@ export class HandDetector implements ModelAdapter {
     }
 
     // ── Temporal smoothing of scaleRef ────────────────────────────────────
-    const score = hand.score ?? 0.8;
     // Higher confidence and more frames → faster update
     const rampUp = Math.min(1, this.frameCount / 10);
     const alpha = Math.min(1, (0.20 + score * 0.30) * rampUp + (1 - rampUp));
     const scaleRef = this.prevScaleRef + (rawScale - this.prevScaleRef) * alpha;
     this.prevScaleRef = scaleRef;
+    named['HAND_SCALE'] = { x: scaleRef, y: 0, name: 'HAND_SCALE' };
 
     // ── Temporal smoothing per-landmark ──────────────────────────────────
     const smoothAlpha = this.frameCount < 3 ? 0.85 : 0.7;

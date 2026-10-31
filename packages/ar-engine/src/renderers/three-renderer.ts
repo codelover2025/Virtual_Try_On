@@ -680,10 +680,10 @@ function worldScaleForKind(kind: string | undefined, poseScale: number): number 
   const s = Math.max(0.3, poseScale);
   const k = (kind ?? '').toUpperCase();
   if (k.includes('EARRING')) return s * 42;
-  if (k.includes('NOSE')) return s * 30;
-  if (k.includes('NECKLACE') || k.includes('PENDANT') || k.includes('MANGALSUTRA')) return s * 24;
-  if (k.includes('RING')) return s * 16;
-  if (k.includes('BANGLE') || k.includes('BRACELET') || k.includes('WATCH')) return s * 20;
+  if (k.includes('NOSE')) return s * 58;
+  if (k.includes('NECKLACE') || k.includes('PENDANT') || k.includes('MANGALSUTRA')) return s * 34;
+  if (k.includes('RING')) return s * 22;
+  if (k.includes('BANGLE') || k.includes('BRACELET') || k.includes('WATCH')) return s * 28;
   return s * 18;
 }
 
@@ -710,24 +710,29 @@ function createChokerNecklace(): THREE.Group {
   const gold = createGoldMaterial();
   const gem = createGemMaterial();
 
-  // Collar collar curve (arc resting around clavicle / neck base)
-  const collar = new THREE.Mesh(
-    new THREE.TorusGeometry(1.6, 0.045, 16, 64, Math.PI * 0.8),
+  // Visible chain around the neck, not just a tiny pendant fragment.
+  const chain = new THREE.Mesh(
+    new THREE.TorusGeometry(1.7, 0.075, 16, 72, Math.PI * 1.45),
     gold,
   );
-  collar.rotation.z = Math.PI * 0.1;
-  collar.rotation.x = Math.PI * 0.25;
+  chain.rotation.x = Math.PI * 0.62;
+  chain.position.set(0, 0.05, 0.15);
 
-  // Central bail ring
-  const bail = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.025, 12, 24), gold);
-  bail.position.set(0, -1.2, 0);
+  const innerChain = new THREE.Mesh(
+    new THREE.TorusGeometry(1.55, 0.04, 12, 64, Math.PI * 1.35),
+    gold,
+  );
+  innerChain.rotation.x = Math.PI * 0.62;
+  innerChain.position.set(0, 0.18, 0.12);
 
-  // Central pendant stone
-  const pendant = new THREE.Mesh(new THREE.OctahedronGeometry(0.32, 0), gem);
+  const bail = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.03, 12, 24), gold);
+  bail.position.set(0, -1.35, 0.2);
+
+  const pendant = new THREE.Mesh(new THREE.OctahedronGeometry(0.34, 0), gem);
   pendant.scale.set(0.85, 1.35, 0.85);
-  pendant.position.set(0, -1.55, 0.05);
+  pendant.position.set(0, -1.75, 0.22);
 
-  group.add(collar, bail, pendant);
+  group.add(chain, innerChain, bail, pendant);
   return group;
 }
 
@@ -738,14 +743,13 @@ function createSeptumNoseRing(): THREE.Group {
 
   // Small hoop
   const hoop = new THREE.Mesh(
-    new THREE.TorusGeometry(0.12, 0.022, 16, 32, Math.PI * 1.65),
+    new THREE.TorusGeometry(0.22, 0.038, 16, 32, Math.PI * 1.7),
     gold,
   );
   hoop.rotation.z = Math.PI * 0.18;
 
-  // Diamond accent bead
-  const accent = new THREE.Mesh(new THREE.SphereGeometry(0.04, 16, 16), gem);
-  accent.position.set(0, -0.12, 0);
+  const accent = new THREE.Mesh(new THREE.SphereGeometry(0.07, 16, 16), gem);
+  accent.position.set(0, -0.22, 0);
 
   group.add(hoop, accent);
   return group;

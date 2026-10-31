@@ -207,7 +207,7 @@ export class FaceDetector implements ModelAdapter {
     const faceHeight = forehead && chin
       ? Math.max(40, Math.hypot(chin.x - forehead.x, chin.y - forehead.y))
       : height * 0.28;
-    const lobeDrop = faceHeight * 0.055;
+    const lobeDrop = faceHeight * 0.025;
 
     if (leftTragus) {
       const lx = leftJaw ? leftTragus.x * 0.35 + leftJaw.x * 0.65 : leftTragus.x;

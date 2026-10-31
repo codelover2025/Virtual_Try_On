@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { JewelleryKind } from '@vj/shared';
 import { AnchorRegistry } from '../src/anchors/anchor-registry.js';
 import { PoseFitter } from '../src/fitting/pose-fitter.js';
+import { HandDetector } from '../src/detectors/hand-detector.js';
 import { ThreeRenderer } from '../src/renderers/three-renderer.js';
 import { Canvas2dRenderer } from '../src/renderers/canvas2d-renderer.js';
 import type { LandmarkResult, PoseFit } from '../src/types.js';
@@ -121,6 +122,32 @@ describe('Phase 3: realistic jewellery tracking', () => {
       expect(Math.abs(fit.position.y - expectedY)).toBeLessThan(12);
     });
 
+    it('builds ring and bangle anchors from MediaPipe 21 hand points', () => {
+      const detector = new HandDetector();
+      const mesh = Array.from({ length: 21 }, (_, i) => ({
+        x: 0.4 + (i % 5) * 0.03,
+        y: 0.3 + Math.floor(i / 5) * 0.05,
+        z: 0,
+      }));
+      mesh[0] = { x: 0.42, y: 0.62, z: 0 }; // wrist
+      mesh[5] = { x: 0.48, y: 0.40, z: 0 }; // index mcp
+      mesh[9] = { x: 0.44, y: 0.38, z: 0 }; // middle mcp
+      mesh[13] = { x: 0.40, y: 0.40, z: 0 }; // ring mcp
+      mesh[14] = { x: 0.39, y: 0.32, z: 0 }; // ring pip
+      mesh[17] = { x: 0.36, y: 0.42, z: 0 }; // pinky mcp
+
+      const res = (detector as unknown as {
+        _processMediaPipe21: (m: typeof mesh, w: number, h: number) => LandmarkResult;
+      })._processMediaPipe21(mesh, 1000, 800);
+
+      expect(res.kind).toBe('hand');
+      expect(res.named['WRIST']).toBeDefined();
+      expect(res.named['BANGLE_ANCHOR']).toBeDefined();
+      expect(res.named['RING_SLOT_3']).toBeDefined();
+      expect(res.named['HAND_SCALE']?.x).toBeGreaterThan(10);
+      detector.dispose();
+    });
+
     it('orients a ring using the finger rotation slot', () => {
       const profile = AnchorRegistry.get(JewelleryKind.RINGS).defaultProfile;
       const fitter = new PoseFitter(profile, {
@@ -146,7 +173,7 @@ describe('Phase 3: realistic jewellery tracking', () => {
       expect(fit.rotationZ).toBeCloseTo(1.1, 1);
     });
 
-    it('uses NOSE_WING_WIDTH for nose-ring scale instead of full face scaleRef', () => {
+    it('keeps nose-ring scale face-sized instead of shrinking to raw wing pixels', () => {
       const profile = AnchorRegistry.get(JewelleryKind.NOSE_RING).defaultProfile;
       const fitter = new PoseFitter(profile, {
         scale: 1,
@@ -165,7 +192,21 @@ describe('Phase 3: realistic jewellery tracking', () => {
         },
         scaleRef: 160,
       });
-      expect(fit.scale).toBeCloseTo(0.28, 1);
+      expect(fit.scale).toBeGreaterThan(0.8);
+      expect(fit.scale).toBeLessThan(2.2);
+    });
+
+    it('maps catalogue anchorType records onto real anatomical anchors', () => {
+      const bangle = AnchorRegistry.mergeProfile(JewelleryKind.BANGLES, {
+        anchorType: 'WRIST',
+      } as never);
+      expect(bangle.primaryAnchor).toBe('BANGLE_ANCHOR');
+
+      const ring = AnchorRegistry.mergeProfile(JewelleryKind.RINGS, {
+        anchorType: 'FINGER_BASE',
+        fingerIndex: 3,
+      } as never);
+      expect(ring.primaryAnchor).toBe('RING_SLOT_3');
     });
 
     it('hides a ring when the finger is tightly curled', () => {

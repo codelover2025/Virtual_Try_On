@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArEngine } from '@vj/ar-engine';
+import { ArEngine, detectorForKind } from '@vj/ar-engine';
 import { queryKeys } from '@vj/api-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -559,6 +559,7 @@ export function TryOnExperience({
             onRetry={startCamera}
             onDismissError={() => setHud((prev) => ({ ...prev, error: undefined, status: 'IDLE' }))}
             promptText={`Position your camera to see ${currentProduct.name} fitted precisely in real-time.`}
+            guideMode={detectorForKind(currentProduct.jewelleryKind)}
           />
 
           {/* Quick In-Studio Jewellery Switcher Strip */}

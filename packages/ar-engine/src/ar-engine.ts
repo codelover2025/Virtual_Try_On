@@ -434,9 +434,9 @@ export class ArEngine {
           this.lastRenderTier = tier;
         }
 
-        const skipRender = this.adaptive.shouldSkipRender();
+        const skipExtras = this.adaptive.shouldSkipRender();
 
-        if (this.frameIndex % 8 === 0) {
+        if (!skipExtras && this.frameIndex % 8 === 0) {
           const size = this.lastPose?.scale ? this.lastPose.scale * 4 : video.videoWidth * 0.35;
           const sampleX = this.lastPose ? this.lastPose.position.x : video.videoWidth / 2;
           const luma = this.lighting.estimate(video, {
@@ -462,7 +462,7 @@ export class ArEngine {
           this.recoverAttempts = Math.max(0, this.recoverAttempts - 1);
         }
 
-        if (!skipRender && this.status !== 'LOST' && pose.visible) {
+        if (this.status !== 'LOST' && pose.visible) {
           const is3d = this.is3DAsset(this.config);
           const kind = this.config?.jewelleryKind;
           if (is3d && this.threeRenderer) {
@@ -534,6 +534,15 @@ export class ArEngine {
       ) {
         promptMessage = 'Show your full hand';
       }
+    } else if (
+      this.detector?.name === 'hand' &&
+      !this.lastLandmarks &&
+      (this.config?.jewelleryKind === 'RINGS' ||
+        this.config?.jewelleryKind === 'BANGLES' ||
+        this.config?.jewelleryKind === 'BRACELET' ||
+        this.config?.jewelleryKind === 'WATCH')
+    ) {
+      promptMessage = 'Show your hand to the camera';
     }
 
     if (this.lastLandmarks) {
@@ -664,24 +673,32 @@ export class ArEngine {
       this.canvasRenderer.clearJewellery();
 
       if (config.assetUrl && !config.assetUrl.startsWith('procedural://')) {
-        await this.canvasRenderer.loadOverlay(
-          config.assetUrl,
-          config.mirrorForOppositeEar ?? false,
-        );
-      } else if (this.host.threeCanvas) {
-        // Fallback to procedural 3D model for this specific category if no 2D image url
-        if (!this.threeRenderer) {
-          this.threeRenderer = new ThreeRenderer(this.host.threeCanvas);
-          this.syncCanvasSizes();
+        try {
+          await this.canvasRenderer.loadOverlay(
+            config.assetUrl,
+            config.mirrorForOppositeEar ?? false,
+          );
+        } catch {
+          this._loadProceduralFallback(config);
         }
-        this.threeRenderer.loadProcedural(
-          config.jewelleryKind.toLowerCase(),
-          config.mirrorForOppositeEar ?? (config.jewelleryKind === 'EARRINGS'),
-        );
+      } else {
+        this._loadProceduralFallback(config);
       }
     }
 
     this.assetLoaded = true;
+  }
+
+  private _loadProceduralFallback(config: JewelleryConfig): void {
+    if (!this.host?.threeCanvas) return;
+    if (!this.threeRenderer) {
+      this.threeRenderer = new ThreeRenderer(this.host.threeCanvas);
+      this.syncCanvasSizes();
+    }
+    this.threeRenderer.loadProcedural(
+      config.jewelleryKind.toLowerCase(),
+      config.mirrorForOppositeEar ?? (config.jewelleryKind === 'EARRINGS'),
+    );
   }
 
   private syncCanvasSizes(): void {
