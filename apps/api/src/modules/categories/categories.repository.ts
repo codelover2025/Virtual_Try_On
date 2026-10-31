@@ -4,7 +4,7 @@ import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 @Injectable()
 export class CategoriesRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   findAllActive() {
     return this.prisma.category.findMany({
@@ -21,10 +21,11 @@ export class CategoriesRepository {
   }
 
   findByIdOrSlug(idOrSlug: string) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idOrSlug);
     return this.prisma.category.findFirst({
       where: {
         deletedAt: null,
-        OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+        ...(isUuid ? { OR: [{ id: idOrSlug }, { slug: idOrSlug }] } : { slug: idOrSlug }),
       },
     });
   }

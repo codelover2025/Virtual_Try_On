@@ -41,6 +41,7 @@ import {
   toast,
 } from '@vj/ui';
 import { api } from '@/lib/api';
+import { storefrontUrl } from '@/lib/storefront-url';
 import type { ProductListItemDto } from '@vj/types';
 import { ProductFormDialog } from '@/components/products/product-form-dialog';
 import { UploadJewelleryImageDialog } from '@/components/products/upload-jewellery-image-dialog';
@@ -248,7 +249,7 @@ export default function AdminProductsPage() {
                             className="h-8 rounded-full text-xs"
                             title="Launch AR Try-On"
                           >
-                            <a href={`http://localhost:3000/try-on/${p.id}`} target="_blank" rel="noreferrer">
+                            <a href={storefrontUrl(`/try-on/${p.id}`)} target="_blank" rel="noreferrer">
                               <Eye className="h-3.5 w-3.5 text-primary mr-1" /> AR View
                             </a>
                           </Button>

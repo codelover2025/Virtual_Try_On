@@ -49,25 +49,25 @@ const categorySpotlights = [
     icon: Gem,
     badge: 'Biacromial Pose Anchor',
     image: '/assets/necklace-choker.svg',
-    slug: 'necklace',
+    slug: 'necklaces',
   },
   {
-    kind: 'RING',
+    kind: 'RINGS',
     name: 'Solitaires & Bands',
     description: 'Brilliant-cut diamond solitaires and platinum bands fitted directly on the ring finger via hand landmarking.',
     icon: Diamond,
     badge: 'Hand Landmark Fitting',
     image: '/assets/ring-solitaire.svg',
-    slug: 'ring',
+    slug: 'rings',
   },
   {
-    kind: 'BANGLE',
+    kind: 'BANGLES',
     name: 'Bangles & Kadas',
     description: 'Carved gold kadas and bridal bangles tracking wrist contours with continuous scale stabilization.',
     icon: Layers,
     badge: 'Wrist Contour Fitting',
     image: '/assets/bangle-kada.svg',
-    slug: 'bangle',
+    slug: 'bangles',
   },
   {
     kind: 'NOSE_RING',
@@ -76,7 +76,7 @@ const categorySpotlights = [
     icon: Zap,
     badge: 'Alar Groove Tracking',
     image: '/assets/nosering-septum.svg',
-    slug: 'nose_ring',
+    slug: 'nose-rings',
   },
 ];
 
@@ -372,8 +372,8 @@ export default function Home() {
                 { id: 'ALL', label: 'All Pieces' },
                 { id: 'EARRINGS', label: 'Earrings' },
                 { id: 'NECKLACE', label: 'Necklaces' },
-                { id: 'RING', label: 'Rings' },
-                { id: 'BANGLE', label: 'Bangles' },
+                { id: 'RINGS', label: 'Rings' },
+                { id: 'BANGLES', label: 'Bangles' },
                 { id: 'NOSE_RING', label: 'Nose Rings' },
               ].map((tab) => (
                 <button

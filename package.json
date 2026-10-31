@@ -7,11 +7,12 @@
     "build": "turbo build",
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
-    "test": "vitest run",
+    "test": "node --require ./scripts/node-compat.cjs ./node_modules/vitest/vitest.mjs run",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
+    "@rolldown/binding-win32-x64-msvc": "1.2.14",
     "turbo": "^2.3.3",
     "vitest": "^5.0.5"
   },

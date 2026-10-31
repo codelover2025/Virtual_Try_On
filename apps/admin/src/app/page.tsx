@@ -33,6 +33,7 @@ import {
 } from '@vj/ui';
 import { AdminShell } from '@/components/layout/admin-shell';
 import { api } from '@/lib/api';
+import { storefrontUrl } from '@/lib/storefront-url';
 
 export default function AdminDashboardPage() {
   const analyticsQuery = useQuery({
@@ -200,7 +201,7 @@ export default function AdminDashboardPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <Button asChild variant="ghost" size="sm" className="h-7 text-xs rounded-full">
-                            <a href={`http://localhost:3000/try-on/${p.id}`} target="_blank" rel="noreferrer">
+                            <a href={storefrontUrl(`/try-on/${p.id}`)} target="_blank" rel="noreferrer">
                               <Eye className="h-3.5 w-3.5 mr-1 text-primary" /> Test AR
                             </a>
                           </Button>

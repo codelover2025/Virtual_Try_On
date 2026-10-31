@@ -1,3 +1,4 @@
+import type { JewelleryKind } from '@vj/shared';
 import type { ProductDetailDto, ProductListItemDto } from '@vj/types';
 import { FALLBACK_CATALOGUE } from './fallback-catalogue';
 
@@ -50,4 +51,53 @@ export function getProductFromCacheOrFallback(idOrSlug: string): ProductDetailDt
   );
   if (match) return match;
   return catalogue[0] || FALLBACK_CATALOGUE[0];
+}
+
+export function filterCachedCatalogue(filters: {
+  q?: string;
+  categoryId?: string;
+  jewelleryKind?: JewelleryKind;
+}): ProductDetailDto[] {
+  const q = filters.q?.trim().toLowerCase();
+  return getCachedOrFallbackCatalogue().filter((item) => {
+    if (filters.jewelleryKind && item.jewelleryKind !== filters.jewelleryKind) return false;
+    if (filters.categoryId && item.category?.id !== filters.categoryId && item.category?.slug !== filters.categoryId) {
+      return false;
+    }
+    if (q) {
+      const haystack = `${item.name} ${item.sku} ${item.description ?? ''}`.toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+export function asOfflineProductList(items: ProductDetailDto[]) {
+  return {
+    items,
+    pagination: {
+      page: 1,
+      pageSize: items.length || 12,
+      total: items.length,
+      totalPages: 1,
+    },
+  };
+}
+
+export const CATEGORY_SLUG_TO_KIND: Record<string, JewelleryKind> = {
+  earrings: 'EARRINGS',
+  necklace: 'NECKLACE',
+  necklaces: 'NECKLACE',
+  ring: 'RINGS',
+  rings: 'RINGS',
+  bangle: 'BANGLES',
+  bangles: 'BANGLES',
+  'nose-rings': 'NOSE_RING',
+  nose_ring: 'NOSE_RING',
+  nosering: 'NOSE_RING',
+};
+
+export function kindFromCategorySlug(slug?: string | null): JewelleryKind | undefined {
+  if (!slug) return undefined;
+  return CATEGORY_SLUG_TO_KIND[slug.toLowerCase()];
 }

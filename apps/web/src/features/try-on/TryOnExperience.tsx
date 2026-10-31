@@ -3,13 +3,11 @@
 import { useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArEngine } from '@vj/ar-engine';
-import { ApiError, queryKeys } from '@vj/api-client';
+import { queryKeys } from '@vj/api-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
-  Sparkles,
   ShoppingBag,
   Heart,
-  ChevronRight,
   Info,
   Maximize2,
   Minimize2,
@@ -22,7 +20,6 @@ import {
   Badge,
   toast,
   formatPrice,
-  PageLoader,
   CameraComponent,
   JewellerySelector,
   CaptureModal,
@@ -48,9 +45,14 @@ import { TryOnErrorState } from '@/components/try-on/try-on-error-state';
 export interface TryOnExperienceProps {
   product: ProductDetailDto;
   alternativeProducts?: ProductListItemDto[];
+  initialKindFilter?: JewelleryKind | 'ALL';
 }
 
-export function TryOnExperience({ product: initialProduct, alternativeProducts }: TryOnExperienceProps) {
+export function TryOnExperience({
+  product: initialProduct,
+  alternativeProducts,
+  initialKindFilter = 'ALL',
+}: TryOnExperienceProps) {
   const router = useRouter();
   const [, startTransition] = useTransition();
 
@@ -69,7 +71,8 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   const [cinemaMode, setCinemaMode] = useState(false);
   const [isSavedInSession, setIsSavedInSession] = useState(false);
   const [captureMeta, setCaptureMeta] = useState({ width: 0, height: 0 });
-  const [kindFilter, setKindFilter] = useState<JewelleryKind | 'ALL'>('ALL');
+  const [kindFilter, setKindFilter] = useState<JewelleryKind | 'ALL'>(initialKindFilter);
+  const [switchingPieceId, setSwitchingPieceId] = useState<string | null>(null);
   const pendingEvents = useRef<TryOnAnalyticsEvent[]>([]);
   const lastStatus = useRef('');
 
@@ -107,6 +110,10 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   useEffect(() => {
     setCurrentProduct(initialProduct);
   }, [initialProduct]);
+
+  useEffect(() => {
+    setKindFilter(initialKindFilter);
+  }, [initialKindFilter]);
 
   // Load alternative products for in-studio switcher if not provided
   const catalogQuery = useQuery({
@@ -261,6 +268,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   async function startCamera() {
     if (!videoRef.current || !overlayRef.current || !threeRef.current) return;
     setStarting(true);
+    setHud((prev) => ({ ...prev, error: undefined }));
     try {
       engineRef.current?.stop();
       const engine = new ArEngine();
@@ -318,6 +326,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
         friendlyMessage = 'Camera does not support requested resolution. Trying fallback settings…';
       }
 
+      setHud((prev) => ({ ...prev, error: friendlyMessage, status: 'ERROR' }));
       toast.error(friendlyMessage);
       setRunning(false);
     } finally {
@@ -330,7 +339,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
     engineRef.current = null;
     setRunning(false);
     setTracking(false);
-    setHud({ status: 'IDLE', fps: 0 });
+    setHud({ status: 'IDLE', fps: 0, error: undefined });
   }
 
   async function flipCamera() {
@@ -355,6 +364,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
   // Handle switching jewellery piece in-studio
   async function handleSelectPiece(item: JewellerySelectorItem) {
     if (item.id === currentProduct.id) return;
+    setSwitchingPieceId(item.id);
     try {
       toast.info(`Fitting ${item.name}…`);
       let detail: ProductDetailDto;
@@ -366,6 +376,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
         detail = fallback;
       }
       setCurrentProduct(detail);
+      handleResetFineTune();
 
       // Update URL silently without full navigation
       startTransition(() => {
@@ -388,6 +399,8 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
       }
     } catch (err) {
       toast.error('Could not switch jewellery item');
+    } finally {
+      setSwitchingPieceId(null);
     }
   }
 
@@ -490,7 +503,10 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
               Session: {sessionId ? sessionId.slice(0, 8) : 'Direct'}
             </span>
           </div>
-          <h1 className="mt-1 font-serif text-2xl sm:text-3xl font-normal text-foreground">
+          <h1
+            data-testid="current-product-name"
+            className="mt-1 font-serif text-2xl sm:text-3xl font-normal text-foreground"
+          >
             {currentProduct.name}
           </h1>
         </div>
@@ -540,6 +556,8 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
             onFlip={flipCamera}
             onMirrorToggle={toggleMirror}
             onCapture={handleCapture}
+            onRetry={startCamera}
+            onDismissError={() => setHud((prev) => ({ ...prev, error: undefined, status: 'IDLE' }))}
             promptText={`Position your camera to see ${currentProduct.name} fitted precisely in real-time.`}
           />
 
@@ -553,6 +571,7 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
             <JewellerySelector
               items={visibleItems}
               selectedId={currentProduct.id}
+              loadingId={switchingPieceId}
               onSelect={handleSelectPiece}
             />
           </div>
@@ -696,6 +715,16 @@ export function TryOnExperience({ product: initialProduct, alternativeProducts }
         productName={currentProduct.name}
         onSave={() => saveCaptureMutation.mutateAsync().then(() => undefined)}
         isSaving={saveCaptureMutation.isPending}
+        onDownload={() => {
+          if (!previewUrl) return;
+          const a = document.createElement('a');
+          a.href = previewUrl;
+          a.download = `${currentProduct.slug || 'try-on'}-${Date.now()}.jpg`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          toast.success('Snapshot downloaded to your device');
+        }}
       />
     </div>
   );
