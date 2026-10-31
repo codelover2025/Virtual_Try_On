@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { cn, formatPrice } from '../lib/utils.js';
-import { Sparkles, Check } from 'lucide-react';
+import { Sparkles, Check, Loader2 } from 'lucide-react';
 import type { JewelleryKind } from '@vj/shared';
 
 export interface JewellerySelectorItem {
@@ -19,6 +19,7 @@ export interface JewellerySelectorItem {
 export interface JewellerySelectorProps {
   items: JewellerySelectorItem[];
   selectedId?: string | null;
+  loadingId?: string | null;
   onSelect: (item: JewellerySelectorItem) => void;
   className?: string;
   title?: string;
@@ -27,6 +28,7 @@ export interface JewellerySelectorProps {
 export function JewellerySelector({
   items,
   selectedId,
+  loadingId,
   onSelect,
   className,
   title = 'Switch Piece in Studio',
@@ -51,6 +53,7 @@ export function JewellerySelector({
       >
         {items.map((item) => {
           const isSelected = selectedId === item.id;
+          const isLoading = loadingId === item.id;
           const image = item.primaryImage?.url || item.imageUrl;
 
           return (
@@ -59,11 +62,13 @@ export function JewellerySelector({
               type="button"
               data-testid="jewellery-selector-item"
               onClick={() => onSelect(item)}
+              disabled={isLoading}
               className={cn(
                 'group relative flex-shrink-0 flex items-center gap-2.5 rounded-xl border p-1.5 transition-all text-left duration-200 select-none',
                 isSelected
                   ? 'border-primary bg-primary/10 shadow-sm ring-2 ring-primary/30'
                   : 'border-border/70 bg-background/80 hover:border-primary/50 hover:bg-muted/50',
+                isLoading ? 'opacity-70 cursor-wait' : '',
               )}
             >
               <div className="relative h-12 w-12 overflow-hidden rounded-lg bg-muted flex-shrink-0">
@@ -75,7 +80,11 @@ export function JewellerySelector({
                     ✦
                   </div>
                 )}
-                {isSelected ? (
+                {isLoading ? (
+                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                    <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                  </div>
+                ) : isSelected ? (
                   <div className="absolute inset-0 bg-primary/20 flex items-center justify-center">
                     <Check className="h-4 w-4 text-primary font-bold drop-shadow" />
                   </div>

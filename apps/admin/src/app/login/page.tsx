@@ -15,6 +15,7 @@ import {
 } from '@vj/ui';
 import { useAuthStore } from '@/stores/auth-store';
 import { api } from '@/lib/api';
+import { storefrontUrl } from '@/lib/storefront-url';
 import { Sparkles, Lock, ShieldCheck } from 'lucide-react';
 
 export default function AdminLoginPage() {
@@ -130,7 +131,7 @@ export default function AdminLoginPage() {
           </div>
 
           <div className="mt-6 text-center text-xs text-muted-foreground">
-            <a href="http://localhost:3000" target="_blank" rel="noreferrer" className="hover:text-primary transition">
+            <a href={storefrontUrl()} target="_blank" rel="noreferrer" className="hover:text-primary transition">
               ← Return to Customer Storefront
             </a>
           </div>

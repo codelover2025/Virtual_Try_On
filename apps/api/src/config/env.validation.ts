@@ -9,7 +9,7 @@ export const envValidationSchema = Joi.object({
   JWT_REFRESH_SECRET: Joi.string().min(32).required(),
   JWT_ACCESS_TTL: Joi.string().default('15m'),
   JWT_REFRESH_TTL: Joi.string().default('7d'),
-  CORS_ORIGINS: Joi.string().default('http://localhost:3000'),
+  CORS_ORIGINS: Joi.string().default('http://localhost:3000,http://localhost:3001'),
   STORAGE_PROVIDER: Joi.string().valid('local', 'minio', 'r2').default('local'),
   STORAGE_BUCKET: Joi.string().default('vj-assets'),
   STORAGE_ENDPOINT: Joi.string().default('http://localhost:4000'),
